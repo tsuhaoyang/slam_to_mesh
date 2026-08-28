@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slam-to-mesh"
+version = "0.1.0"
+description = "Convert messy SLAM meshes into lightweight, quad-dominant, UV-unwrapped meshes for Omniverse (USD/glTF)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "slam_to_mesh" }]
+
+# CPU-first core dependencies. Everything here must run without a GPU.
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "pydantic>=2.5,<3.0",
+    "typer>=0.9",
+    "rich>=13.0",
+    "trimesh>=4.0",
+    "rtree>=1.0",
+    "open3d>=0.17",
+    "pymeshlab>=2023.12",
+    "xatlas>=0.0.9",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# USD export (Omniverse-native). Kept optional because pxr wheels are large.
+usd = ["usd-core>=23.11"]
+
+# FastAPI service layer (added in a later task).
+service = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+# GPU-accelerated backends, enabled on the future GPU server.
+gpu = [
+    # placeholders; concrete backends wired when GPU server is available
+]
+
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+slam2mesh = "slam_to_mesh.cli.app:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

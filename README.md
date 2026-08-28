@@ -1,0 +1,97 @@
+# slam_to_mesh
+
+Convert messy 3D SLAM meshes into **lightweight, quad-dominant, UV-unwrapped**
+meshes that are cheap to display and easy to texture in **NVIDIA Omniverse**
+(USD / glTF).
+
+SLAM output (Poisson / TSDF / marching-cubes) is a byproduct of surface
+sampling: hundreds of thousands to millions of irregular triangles, with holes,
+non-manifold edges and floating islands. This project retopologizes it into a
+clean, regular, lightweight mesh suitable for material authoring and real-time
+display.
+
+> **Reality check:** you cannot *perfectly* recover the deliberate quad topology
+> a human artist would author — that design intent never existed in the scan.
+> The goal here is a **regular, quad-dominant, low-poly mesh that is
+> geometrically faithful and production-usable**.
+
+## Pipeline
+
+```
+input SLAM mesh (.ply/.obj)
+  1. Ingest & Analyze   load, stats, detect problems
+  2. Clean              remove islands, fill holes, fix non-manifold, unify normals
+  3. Decimate           QEM simplify to target face count
+  4. Remesh (quad)      field-aligned quad-dominant remesh
+  5. Project            snap remeshed verts back onto original surface
+  6. UV unwrap          xatlas atlas
+  7. Bake (optional)    original color / normal detail -> low-poly textures
+  8. Export             USD / glTF + textures
+  9. QC report          quad ratio, Hausdorff distance, manifoldness, face count
+```
+
+## Design principles
+
+- **CPU-first.** Every stage runs without a GPU. GPU-capable stages
+  (remesh, bake) go through a **backend abstraction** so they can be swapped for
+  accelerated implementations on a GPU server later.
+- **Resumable.** Each stage writes a named intermediate artifact and records its
+  parameters in a job manifest. Users can inspect results, tweak a stage's
+  parameters, and re-run only from that stage onward.
+- **Shared core.** The same pipeline core powers both the CLI and (later) the
+  FastAPI service.
+
+## Layout
+
+```
+src/slam_to_mesh/
+  core/       pipeline stages, orchestration, data model
+  backends/   swappable implementations (CPU now, GPU later)
+  cli/        typer CLI
+  service/    FastAPI service (later)
+```
+
+## Install (CPU)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+# optional: USD export
+pip install -e ".[usd]"
+```
+
+## Usage
+
+```bash
+slam2mesh run input.ply --out out/ --target-faces 20000
+slam2mesh resume-from remesh --job out/job.json
+slam2mesh inspect out/job.json
+```
+
+## Service (FastAPI)
+
+```bash
+pip install -e ".[service]"
+uvicorn slam_to_mesh.service.app:app --host 0.0.0.0 --port 8000
+```
+
+Endpoints:
+
+- `POST /jobs` — upload a mesh (multipart `file`) plus optional form fields
+  (`target_faces`, `decimate_faces`, `backend`, `bake`, `formats`, `project`).
+  Returns a `job_id`; processing runs in the background.
+- `GET /jobs/{job_id}` — job status and per-stage results.
+- `GET /jobs/{job_id}/download` — zip of final artifacts, or `?fmt=glb` for a
+  single file.
+- `GET /backends` — available remesh backends.
+
+The service and CLI share the same pipeline core (`slam_to_mesh.core.pipeline`)
+and on-disk job manifest, so jobs are inspectable and resumable either way.
+
+## GPU note
+
+Every stage runs on CPU today. The remesh stage goes through a backend registry
+(`slam_to_mesh.backends.remesh`), so a GPU field-aligned remesher
+(Instant Meshes / QuadriFlow) can be registered and selected via
+`--backend`/`RemeshConfig.backend` on a GPU server without touching the core.
+
