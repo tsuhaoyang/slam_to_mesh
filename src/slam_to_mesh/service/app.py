@@ -133,6 +133,34 @@ def _overall_status(manifest: JobManifest) -> str:
     return "pending"
 
 
+@app.get("/jobs/{job_id}/source.glb")
+def get_source_glb(job_id: str):
+    """Return the original (pre-remesh) mesh as glb for side-by-side preview.
+
+    Prefers the ingest artifact (the normalized original), falling back to
+    clean, then the raw input. Converted to glb via trimesh and cached on disk
+    as ``source.glb``.
+    """
+    manifest = _require_manifest(job_id)
+    jd = _job_dir(job_id)
+    cached = jd / "source.glb"
+    if not cached.exists():
+        src = None
+        for stage in (Stage.INGEST, Stage.CLEAN):
+            p = manifest.artifact_path(stage)
+            if p is not None and p.exists():
+                src = p
+                break
+        if src is None:
+            src = Path(manifest.input_path)
+        if not src.exists():
+            raise HTTPException(404, "no source mesh available")
+        import trimesh
+
+        trimesh.load(str(src), process=False, force="mesh").export(str(cached))
+    return FileResponse(str(cached), filename="source.glb", media_type="model/gltf-binary")
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str) -> dict:
     """Return job status and per-stage results."""
@@ -312,6 +340,55 @@ def get_lod_glb(job_id: str, target_faces: int, baked: bool = False):
     if not path.exists():
         raise HTTPException(404, "LOD glb missing on disk")
     return FileResponse(str(path), filename="model.glb", media_type="model/gltf-binary")
+
+
+@app.get("/jobs/{job_id}/lod/{target_faces}/wire.json")
+def get_lod_wire(job_id: str, target_faces: int, baked: bool = False) -> dict:
+    """Return the LOD's **quad** wireframe (positions + polygon edges).
+
+    Reads the LOD's polygon OBJ (which preserves 4-vertex faces) and returns a
+    compact `{positions: [x,y,z,...], edges: [i,j,...]}` payload the frontend
+    draws as LineSegments — so the mesh shows real quad edges, not the triangle
+    diagonals a glb would carry.
+    """
+    from ..core.lod import _cache_key
+
+    manifest = _require_manifest(job_id)
+    key = _cache_key(target_faces, baked)
+    lod = manifest.lods.get(key)
+    if lod is None or not lod.obj:
+        raise HTTPException(404, "LOD not built; POST /jobs/{id}/lod first")
+    # Prefer the projected polygon OBJ (kept next to model.obj in the LOD dir).
+    lod_dir = (_job_dir(job_id) / lod.obj).parent
+    poly = lod_dir / "project.obj"
+    if not poly.exists():
+        poly = _job_dir(job_id) / lod.obj
+    if not poly.exists():
+        raise HTTPException(404, "LOD mesh missing on disk")
+
+    positions, edges = _obj_wire(poly)
+    return {"positions": positions, "edges": edges}
+
+
+def _obj_wire(path: Path) -> tuple[list[float], list[int]]:
+    """Parse an OBJ into a flat vertex list and unique polygon-edge index list."""
+    verts: list[float] = []
+    edge_set: set[tuple[int, int]] = set()
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith("v "):
+                p = line.split()
+                verts.extend((float(p[1]), float(p[2]), float(p[3])))
+            elif line.startswith("f "):
+                idx = [int(t.split("/")[0]) - 1 for t in line.split()[1:]]
+                n = len(idx)
+                for i in range(n):
+                    a, b = idx[i], idx[(i + 1) % n]
+                    edge_set.add((a, b) if a < b else (b, a))
+    edges: list[int] = []
+    for a, b in edge_set:
+        edges.extend((a, b))
+    return verts, edges
 
 
 @app.post("/jobs/{job_id}/export-lod")

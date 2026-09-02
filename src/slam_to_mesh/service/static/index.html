@@ -23,7 +23,16 @@
   </header>
 
   <div id="app">
-    <div id="viewer"></div>
+    <div id="viewers">
+      <div class="viewpane">
+        <div class="viewlabel">Surface <span id="srcFaces" class="badge"></span></div>
+        <div id="viewerSrc" class="viewer"></div>
+      </div>
+      <div class="viewpane">
+        <div class="viewlabel">Quad wireframe <span id="lodFaces" class="badge"></span></div>
+        <div id="viewerLod" class="viewer"></div>
+      </div>
+    </div>
 
     <aside id="panel">
       <div class="row">

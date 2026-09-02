@@ -20,10 +20,38 @@ header .sub { margin: 0; color: #6b6b70; font-size: 13px; max-width: 720px; }
   height: calc(100vh - 74px);
 }
 
-#viewer {
+#viewers {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+}
+
+.viewpane {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid #3a3a40;
+}
+.viewpane:last-child { border-right: 0; }
+
+.viewlabel {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d0d0d5;
+  background: #202024;
+}
+.viewlabel .badge {
+  font-weight: 400;
+  color: #9a9aa2;
+  margin-left: 6px;
+}
+
+.viewer {
   flex: 1 1 auto;
   background: #2a2a2e;
-  min-width: 0;
+  min-height: 0;
 }
 
 #panel {

@@ -222,3 +222,31 @@ def test_get_job_exposes_ingest_faces_for_ui(client: TestClient, slam_mesh_path:
     assert r.status_code == 200
     ingest = r.json()["stages"]["ingest"]
     assert ingest["metrics"].get("faces", 0) > 0
+
+
+def test_source_glb_served(client: TestClient, slam_mesh_path: Path):
+    """The original mesh is available as glb for the surface viewer."""
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.get(f"/jobs/{job_id}/source.glb")
+    assert r.status_code == 200
+    assert len(r.content) > 0
+
+
+def test_lod_wire_quads(client: TestClient, slam_mesh_path: Path):
+    """wire.json returns quad-polygon edges (positions + edge indices)."""
+    job_id = _create_completed_job(client, slam_mesh_path)
+    built = client.post(f"/jobs/{job_id}/lod", json={"target_faces": 600}).json()
+    tf = built["lod"]["target_faces"]
+    r = client.get(f"/jobs/{job_id}/lod/{tf}/wire.json")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["positions"]) % 3 == 0
+    assert len(data["edges"]) % 2 == 0
+    assert len(data["positions"]) > 0
+    assert len(data["edges"]) > 0
+
+
+def test_lod_wire_404_before_build(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.get(f"/jobs/{job_id}/lod/9999/wire.json")
+    assert r.status_code == 404
