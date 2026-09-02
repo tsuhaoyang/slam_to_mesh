@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>slam_to_mesh — interactive decimation</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Three.js + loaders/controls via import map (ES modules, CDN). -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>Interactive Quad Decimation</h1>
+    <p class="sub">Drag the slider to reduce faces. Every level is regular
+      quad-dominant (re-remeshed with QuadriFlow), so it stays export-ready.</p>
+  </header>
+
+  <div id="app">
+    <div id="viewer"></div>
+
+    <aside id="panel">
+      <div class="row">
+        <label for="job">Job ID</label>
+        <input id="job" type="text" placeholder="paste job_id" />
+        <button id="load">Load</button>
+      </div>
+
+      <div class="row">
+        <label for="slider">Target faces: <span id="pct">50%</span> of input
+          (<span id="targetFaces">—</span>)</label>
+        <input id="slider" type="range" min="5" max="100" value="50" step="1" />
+      </div>
+
+      <div class="row toggle">
+        <label><input id="bake" type="checkbox" /> Bake color + normal (preview textures)</label>
+      </div>
+
+      <div class="row">
+        <button id="apply">Apply</button>
+        <span id="status"></span>
+      </div>
+
+      <div id="metrics" class="metrics">
+        <h3>Metrics</h3>
+        <table>
+          <tr><td>Actual faces</td><td id="mFaces">—</td></tr>
+          <tr><td>Quad ratio</td><td id="mQuad">—</td></tr>
+          <tr><td>Mean surface error</td><td id="mErr">—</td></tr>
+          <tr><td>Hausdorff</td><td id="mHaus">—</td></tr>
+        </table>
+      </div>
+
+      <div class="row export">
+        <h3>Export chosen LOD</h3>
+        <label><input type="checkbox" class="fmt" value="glb" checked /> glTF (.glb)</label>
+        <label><input type="checkbox" class="fmt" value="usd" checked /> USD (.usd)</label>
+        <label><input type="checkbox" class="fmt" value="obj" /> OBJ (.obj)</label>
+        <button id="export">Export &amp; Download</button>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
