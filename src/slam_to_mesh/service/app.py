@@ -27,8 +27,10 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 from ..backends.remesh import available_backends
+from ..core.lod import build_lod
 from ..core.model import (
     JobManifest,
     PipelineConfig,
@@ -41,6 +43,13 @@ from ..core.pipeline import create_job, run_pipeline
 JOBS_ROOT = Path("service_jobs")
 
 app = FastAPI(title="slam_to_mesh", version="0.1.0")
+
+# Serve the interactive decimation UI (Three.js) as static files.
+_STATIC_DIR = Path(__file__).parent / "static"
+if _STATIC_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/ui", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
 
 # Single-worker pool keeps CPU jobs serialized; raise for a bigger box/GPU.
 _executor = ThreadPoolExecutor(max_workers=1)
@@ -180,4 +189,165 @@ def download_job(job_id: str, fmt: Optional[str] = None):
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{job_id}.zip"'},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Interactive LOD (decimation) endpoints
+# --------------------------------------------------------------------------- #
+
+
+class LodRequest(BaseModel):
+    """Body for POST /jobs/{id}/lod."""
+
+    target_faces: int | None = None
+    ratio: float | None = None
+    bake: bool = False
+
+
+class ExportLodRequest(BaseModel):
+    """Body for POST /jobs/{id}/export-lod."""
+
+    target_faces: int | None = None
+    ratio: float | None = None
+    bake: bool = True
+    formats: list[str] = ["glb", "usd"]
+
+
+def _require_manifest(job_id: str) -> JobManifest:
+    mp = _manifest_path(job_id)
+    if not mp.exists():
+        raise HTTPException(404, "job not found")
+    return JobManifest.load(mp)
+
+
+def _lod_source_ready(manifest: JobManifest) -> bool:
+    """A LOD needs at least one triangle source artifact (ingest onward)."""
+    for stage in (Stage.DECIMATE, Stage.CLEAN, Stage.INGEST):
+        p = manifest.artifact_path(stage)
+        if p is not None and p.exists():
+            return True
+    return Path(manifest.input_path).exists()
+
+
+def _build_lod_sync(job_id: str, target_faces, ratio, bake: bool):
+    """Run build_lod in the CPU pool and persist to the on-disk manifest."""
+    manifest = JobManifest.load(_manifest_path(job_id))
+    result = build_lod(manifest, target_faces=target_faces, ratio=ratio, bake=bake)
+    return result
+
+
+def _export_lod_extra_formats(lod_dir: Path, formats: list[str]) -> None:
+    """Write additional formats (currently USD) for a built LOD directory.
+
+    glb/obj are already produced by build_lod. USD is generated from the LOD's
+    UV mesh (unwrap.obj if present, else model.obj) with baked textures bound.
+    """
+    import trimesh
+
+    from ..core.stages.export import _export_usd, _load_uv_mesh_with_texture
+
+    wants_usd = any(f.lower() in {"usd", "usdc", "usda"} for f in formats)
+    if not wants_usd:
+        return
+
+    mesh_src = lod_dir / "unwrap.obj"
+    if not mesh_src.exists():
+        mesh_src = lod_dir / "model.obj"
+    if not mesh_src.exists():
+        return
+
+    color = lod_dir / "bake_color.png"
+    normal = lod_dir / "bake_normal.png"
+    color = color if color.exists() else None
+    normal = normal if normal.exists() else None
+
+    mesh = _load_uv_mesh_with_texture(mesh_src, color, normal)
+    if not isinstance(mesh, trimesh.Trimesh):
+        return
+    _export_usd(mesh, lod_dir / "model.usd", color, normal)
+
+
+@app.post("/jobs/{job_id}/lod")
+def create_lod(job_id: str, req: LodRequest) -> dict:
+    """Build (or return cached) a quad LOD at a target face count / ratio."""
+    manifest = _require_manifest(job_id)
+    if not _lod_source_ready(manifest):
+        raise HTTPException(409, "job has no mesh to remesh yet")
+    if req.target_faces is None and req.ratio is None:
+        raise HTTPException(422, "provide target_faces or ratio")
+
+    # Run synchronously in the CPU pool (spec: ~1-2 s per change).
+    fut = _executor.submit(
+        _build_lod_sync, job_id, req.target_faces, req.ratio, req.bake
+    )
+    result = fut.result()
+
+    return {
+        "job_id": job_id,
+        "lod": result.model_dump(),
+        "glb_url": f"/jobs/{job_id}/lod/{result.target_faces}/model.glb"
+        + ("?baked=1" if result.baked else ""),
+    }
+
+
+@app.get("/jobs/{job_id}/lods")
+def list_lods(job_id: str) -> dict:
+    """All LODs built so far for this job."""
+    manifest = _require_manifest(job_id)
+    return {"job_id": job_id, "lods": {k: v.model_dump() for k, v in manifest.lods.items()}}
+
+
+@app.get("/jobs/{job_id}/lod/{target_faces}/model.glb")
+def get_lod_glb(job_id: str, target_faces: int, baked: bool = False):
+    """Return the glb for a previously built LOD."""
+    from ..core.lod import _cache_key
+
+    manifest = _require_manifest(job_id)
+    key = _cache_key(target_faces, baked)
+    lod = manifest.lods.get(key)
+    if lod is None or not lod.glb:
+        raise HTTPException(404, "LOD not built; POST /jobs/{id}/lod first")
+    path = _job_dir(job_id) / lod.glb
+    if not path.exists():
+        raise HTTPException(404, "LOD glb missing on disk")
+    return FileResponse(str(path), filename="model.glb", media_type="model/gltf-binary")
+
+
+@app.post("/jobs/{job_id}/export-lod")
+def export_lod(job_id: str, req: ExportLodRequest):
+    """Export a chosen LOD to the requested formats (glb/usd/obj).
+
+    Builds the LOD with baking on (default) so exported formats carry textures,
+    then zips the LOD's exported artifacts for download.
+    """
+    manifest = _require_manifest(job_id)
+    if not _lod_source_ready(manifest):
+        raise HTTPException(409, "job has no mesh to remesh yet")
+
+    fut = _executor.submit(
+        _build_lod_sync, job_id, req.target_faces, req.ratio, req.bake
+    )
+    result = fut.result()
+
+    lod_dir = (_job_dir(job_id) / result.glb).parent
+
+    # build_lod writes obj + glb. Produce any additionally requested formats
+    # (e.g. usd) from the LOD mesh + baked textures.
+    _export_lod_extra_formats(lod_dir, req.formats)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for pattern in ("model.*", "bake_*.png"):
+            for f in lod_dir.glob(pattern):
+                zf.write(f, arcname=f.name)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{job_id}_lod{result.actual_faces}.zip"'
+            )
+        },
     )
