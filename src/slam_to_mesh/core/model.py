@@ -220,6 +220,24 @@ class StageResult(BaseModel):
         self.finished_at = datetime.now(timezone.utc)
 
 
+class LodResult(BaseModel):
+    """A single interactive level-of-detail built by re-remeshing.
+
+    Produced by :func:`slam_to_mesh.core.lod.build_lod`. Paths are relative to
+    the job directory. ``baked`` indicates whether ``glb`` carries color/normal
+    textures.
+    """
+
+    target_faces: int
+    actual_faces: int = 0
+    quad_ratio: float = 0.0
+    mean_dist_pct_bbox: float = 0.0
+    hausdorff_pct_bbox: float = 0.0
+    baked: bool = False
+    glb: str | None = None
+    obj: str | None = None
+
+
 class JobManifest(BaseModel):
     """The persisted state of a pipeline job (``job.json``)."""
 
@@ -231,6 +249,8 @@ class JobManifest(BaseModel):
     config: PipelineConfig = Field(default_factory=PipelineConfig)
     input_stats: MeshStats | None = None
     results: dict[Stage, StageResult] = Field(default_factory=dict)
+    #: Interactive LOD cache, keyed by "<faces>" or "<faces>+baked".
+    lods: dict[str, "LodResult"] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

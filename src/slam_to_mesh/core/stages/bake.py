@@ -50,6 +50,21 @@ def _reference_mesh(ctx: StageContext, need_color: bool) -> trimesh.Trimesh:
     return load_mesh(ctx.manifest.input_path)
 
 
+def _reference_mesh_for(manifest, prefer_color: bool = True) -> trimesh.Trimesh:
+    """Manifest-based reference loader (reused by LOD baking).
+
+    Returns the highest-detail available mesh, preferring one with vertex colors
+    when ``prefer_color`` is set.
+    """
+    for stage in (Stage.INGEST, Stage.CLEAN):
+        p = manifest.artifact_path(stage)
+        if p is not None and p.exists():
+            m = load_mesh(p)
+            if not prefer_color or _has_vertex_colors(m):
+                return m
+    return load_mesh(manifest.input_path)
+
+
 def _has_vertex_colors(mesh: trimesh.Trimesh) -> bool:
     try:
         vc = mesh.visual.vertex_colors

@@ -11,6 +11,8 @@ Quad connectivity is preserved: we only move vertex positions, not topology.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import trimesh
 
@@ -26,6 +28,43 @@ def _reference_surface(ctx: StageContext) -> trimesh.Trimesh:
         if p is not None and p.exists():
             return load_mesh(p)
     return load_mesh(ctx.manifest.input_path)
+
+
+def project_obj_onto_surface(
+    src_obj: Path,
+    out_obj: Path,
+    reference: trimesh.Trimesh,
+    max_snap_ratio: float = 0.02,
+) -> dict:
+    """Snap an OBJ's vertices onto *reference*, preserving polygon faces.
+
+    Pure, stage-independent helper reused by the project stage and by LOD
+    building. Reads the polygon OBJ at *src_obj*, snaps each vertex to the
+    closest point on *reference* when the move is within
+    ``max_snap_ratio * bbox_diagonal``, and writes the result to *out_obj* with
+    the original face lines intact. Returns snap metrics.
+    """
+    verts, faces_lines, other_lines = _read_obj_verts_faces(src_obj)
+    diag = bbox_diagonal(reference)
+    max_snap = max_snap_ratio * diag
+
+    closest, distances, _ = trimesh.proximity.closest_point(reference, verts)
+    moved = distances <= max_snap
+    new_verts = verts.copy()
+    new_verts[moved] = closest[moved]
+
+    Path(out_obj).parent.mkdir(parents=True, exist_ok=True)
+    _write_obj(out_obj, new_verts, faces_lines, other_lines)
+
+    return {
+        "vertices": int(len(verts)),
+        "vertices_snapped": int(np.count_nonzero(moved)),
+        "max_snap_distance": round(float(max_snap), 6),
+        "mean_snap_distance": round(float(distances[moved].mean()), 6)
+        if np.any(moved)
+        else 0.0,
+        "max_observed_distance": round(float(distances.max()), 6),
+    }
 
 
 def run(ctx: StageContext) -> StageResult:
@@ -46,40 +85,20 @@ def run(ctx: StageContext) -> StageResult:
             result.mark_done()
             return result
 
-        # Load the remeshed mesh WITHOUT triangulation to keep quad faces.
-        # trimesh triangulates, so we preserve original face lines by editing
-        # only the vertex block of the OBJ and rewriting it.
-        verts, faces_lines, other_lines = _read_obj_verts_faces(src)
+        # Load the remeshed mesh WITHOUT triangulation to keep quad faces, snap
+        # onto the reference surface, and write preserving polygon faces.
         ref = _reference_surface(ctx)
-
-        diag = bbox_diagonal(ref)
-        max_snap = cfg.max_snap_ratio * diag
-
-        # Closest point on reference surface for each remeshed vertex.
-        closest, distances, _ = trimesh.proximity.closest_point(ref, verts)
-
-        moved = distances <= max_snap
-        new_verts = verts.copy()
-        new_verts[moved] = closest[moved]
-
         out = ctx.out_path(Stage.PROJECT, "obj")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        _write_obj(out, new_verts, faces_lines, other_lines)
+        metrics = project_obj_onto_surface(
+            src, out, ref, max_snap_ratio=cfg.max_snap_ratio
+        )
 
         result.artifact = ctx.rel(out)
         result.params = cfg.model_dump()
-        result.metrics = {
-            "vertices": int(len(verts)),
-            "vertices_snapped": int(np.count_nonzero(moved)),
-            "max_snap_distance": round(float(max_snap), 6),
-            "mean_snap_distance": round(float(distances[moved].mean()), 6)
-            if np.any(moved)
-            else 0.0,
-            "max_observed_distance": round(float(distances.max()), 6),
-        }
+        result.metrics = metrics
         result.message = (
-            f"snapped {int(np.count_nonzero(moved))}/{len(verts)} verts "
-            f"(<= {max_snap:.4g})"
+            f"snapped {metrics['vertices_snapped']}/{metrics['vertices']} verts "
+            f"(<= {metrics['max_snap_distance']:.4g})"
         )
         result.mark_done()
     except Exception as e:  # noqa: BLE001

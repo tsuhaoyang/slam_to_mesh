@@ -34,6 +34,32 @@ def _distances(a_pts: np.ndarray, b_mesh: trimesh.Trimesh) -> np.ndarray:
     return dist
 
 
+def surface_distance_metrics(
+    final: trimesh.Trimesh, ref: trimesh.Trimesh
+) -> dict:
+    """Bidirectional sampled surface distance between *final* and *ref*.
+
+    Reusable helper (shared by the QC stage and LOD building). Returns Hausdorff
+    and mean distance, both absolute and as a percentage of the reference bbox
+    diagonal.
+    """
+    diag = bbox_diagonal(ref) or 1.0
+    n = min(20000, max(2000, len(final.vertices) * 5))
+    fp = _sample_surface(final, n)
+    rp = _sample_surface(ref, n)
+    d_final_to_ref = _distances(fp, ref)
+    d_ref_to_final = _distances(rp, final)
+    hausdorff = float(max(d_final_to_ref.max(), d_ref_to_final.max()))
+    mean_dist = float((d_final_to_ref.mean() + d_ref_to_final.mean()) / 2.0)
+    return {
+        "hausdorff_distance": round(hausdorff, 6),
+        "hausdorff_pct_bbox": round(hausdorff / diag * 100, 4),
+        "mean_surface_distance": round(mean_dist, 6),
+        "mean_dist_pct_bbox": round(mean_dist / diag * 100, 4),
+        "bbox_diagonal": round(diag, 6),
+    }
+
+
 def run(ctx: StageContext) -> StageResult:
     result = ctx.manifest.result(Stage.QC)
     result.mark_running()
@@ -48,15 +74,10 @@ def run(ctx: StageContext) -> StageResult:
 
         diag = bbox_diagonal(ref) or 1.0
 
-        # Bidirectional surface distance (sampled).
-        n = min(20000, max(2000, len(final.vertices) * 5))
-        fp = _sample_surface(final, n)
-        rp = _sample_surface(ref, n)
-        d_final_to_ref = _distances(fp, ref)
-        d_ref_to_final = _distances(rp, final)
-
-        hausdorff = float(max(d_final_to_ref.max(), d_ref_to_final.max()))
-        mean_dist = float((d_final_to_ref.mean() + d_ref_to_final.mean()) / 2.0)
+        # Bidirectional surface distance (sampled), via the shared helper.
+        dist_metrics = surface_distance_metrics(final, ref)
+        hausdorff = dist_metrics["hausdorff_distance"]
+        mean_dist = dist_metrics["mean_surface_distance"]
 
         # Quad ratio from the remesh stage metrics, if present.
         remesh_res = ctx.manifest.results.get(Stage.REMESH)
