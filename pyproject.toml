@@ -44,6 +44,8 @@ gpu = [
 dev = [
     "pytest>=7.4",
     "ruff>=0.3",
+    # TestClient (starlette) needs an HTTP client for the service tests.
+    "httpx>=0.27",
 ]
 
 [project.scripts]
@@ -55,3 +57,7 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
