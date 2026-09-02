@@ -98,22 +98,15 @@ qc), CLI (`run`, `resume-from`, `inspect`, `list-backends`), FastAPI service
 (create/status/download), resumable job manifest, backend registry + CPU
 fallback, 48 passing tests.
 
-## Next feature: Interactive quad decimation (LOD preview + export)
+## Feature: Interactive quad decimation (LOD preview + export) — **DONE**
 
-Spec: `docs/spec_interactive_decimation.md`. **In progress.**
+Spec: `docs/spec_interactive_decimation.md`.
 
-Web UI where the user drags a slider (% of original faces) to reduce the mesh,
-sees a rotatable Three.js preview with an optional bake toggle (color/normal),
-reads fidelity metrics, and exports the chosen LOD. Decimation = **re-running
-QuadriFlow at a different resolution** (keeps regular quad topology; QEM would
-not). Backend adds `core/lod.py::build_lod` + LOD API endpoints with caching;
-frontend is served as static assets from the service.
-
-Task breakdown (see spec §10):
-1. `core/lod.py` build_lod + LodResult + manifest lods index + caching.
-2. Refactor project/qc helpers into reusable functions.
-3. LOD API endpoints (`POST /lod`, `GET /lod/{n}/model.glb`, `GET /lods`,
-   `POST /export-lod`).
-4. Three.js frontend (viewer, slider, bake toggle, metrics, export).
-5. Tests (core + API + bounds).
-6. README + ROADMAP update.
+Web UI (`/ui/`) where the user drags a slider (% of original faces) to reduce the
+mesh, sees a rotatable Three.js preview with an optional bake toggle
+(color/normal), reads fidelity metrics, and exports the chosen LOD. Decimation =
+**re-running QuadriFlow at a different resolution** (keeps regular quad topology;
+QEM would not). `core/lod.py::build_lod` produces + caches each LOD; LOD API
+endpoints (`POST /lod`, `GET /lod/{n}/model.glb`, `GET /lods`, `POST /export-lod`)
+extend the service; the Three.js frontend is served as static assets. Verified
+end-to-end (build + cache + glb download + export zip); 64 tests pass.

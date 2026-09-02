@@ -28,10 +28,19 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # Redirect job storage to a temp dir.
     monkeypatch.setattr(svc, "JOBS_ROOT", tmp_path / "service_jobs")
 
-    # Run submitted jobs synchronously so status is 'completed' right away.
+    # Run submitted work synchronously; return a future-like so callers that do
+    # `.result()` (the LOD endpoints) work, and callers that ignore the return
+    # (the pipeline job) also work.
+    class _ImmediateFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self, timeout=None):
+            return self._value
+
     class _SyncExecutor:
         def submit(self, fn, *args, **kwargs):
-            fn(*args, **kwargs)
+            return _ImmediateFuture(fn(*args, **kwargs))
 
     monkeypatch.setattr(svc, "_executor", _SyncExecutor())
     return TestClient(svc.app)
@@ -117,3 +126,99 @@ def test_download_missing_format_404(client: TestClient, slam_mesh_path: Path):
     # No STL was exported.
     r = client.get(f"/jobs/{job_id}/download", params={"fmt": "stl"})
     assert r.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Interactive LOD endpoints
+# --------------------------------------------------------------------------- #
+
+
+def _create_completed_job(client: TestClient, slam_mesh_path: Path) -> str:
+    """Create + run a job (synchronous executor) and return its id."""
+    r = client.post(
+        "/jobs",
+        files={"file": ("slam_in.ply", slam_mesh_path.read_bytes(), "application/octet-stream")},
+        data={"target_faces": "800", "decimate_faces": "2000", "formats": "glb,obj"},
+    )
+    assert r.status_code == 202
+    return r.json()["job_id"]
+
+
+def test_lod_build_and_cache(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+
+    r = client.post(f"/jobs/{job_id}/lod", json={"target_faces": 600})
+    assert r.status_code == 200
+    body = r.json()
+    lod = body["lod"]
+    assert lod["actual_faces"] > 0
+    assert 0.0 <= lod["quad_ratio"] <= 1.0
+    assert lod["baked"] is False
+    assert body["glb_url"].endswith("/model.glb")
+
+    # The glb is downloadable.
+    r = client.get(body["glb_url"])
+    assert r.status_code == 200
+    assert len(r.content) > 0
+
+    # Listed among the job's LODs.
+    r = client.get(f"/jobs/{job_id}/lods")
+    assert r.status_code == 200
+    assert len(r.json()["lods"]) >= 1
+
+
+def test_lod_by_ratio(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.post(f"/jobs/{job_id}/lod", json={"ratio": 0.1})
+    assert r.status_code == 200
+    assert r.json()["lod"]["actual_faces"] > 0
+
+
+def test_lod_requires_target_or_ratio(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.post(f"/jobs/{job_id}/lod", json={})
+    assert r.status_code == 422
+
+
+def test_lod_unknown_job_404(client: TestClient):
+    r = client.post("/jobs/nope/lod", json={"target_faces": 500})
+    assert r.status_code == 404
+
+
+def test_lod_glb_404_before_build(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.get(f"/jobs/{job_id}/lod/9999/model.glb")
+    assert r.status_code == 404
+
+
+def test_export_lod_zip(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.post(
+        f"/jobs/{job_id}/export-lod",
+        json={"target_faces": 600, "bake": False, "formats": ["glb", "obj"]},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        names = zf.namelist()
+    assert any(n.startswith("model.") for n in names)
+
+
+def test_ui_served(client: TestClient):
+    r = client.get("/ui/")
+    assert r.status_code == 200
+    assert "Interactive Quad Decimation" in r.text
+    r = client.get("/ui/app.js")
+    assert r.status_code == 200
+
+
+def test_get_job_exposes_ingest_faces_for_ui(client: TestClient, slam_mesh_path: Path):
+    """The frontend maps % → target faces using ingest metrics.faces."""
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.get(f"/jobs/{job_id}")
+    assert r.status_code == 200
+    ingest = r.json()["stages"]["ingest"]
+    assert ingest["metrics"].get("faces", 0) > 0

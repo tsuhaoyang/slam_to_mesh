@@ -85,6 +85,37 @@ Endpoints:
   single file.
 - `GET /backends` — available remesh backends.
 
+Interactive decimation (LOD) endpoints:
+
+- `POST /jobs/{job_id}/lod` — build (or return cached) a quad LOD at a chosen
+  resolution. Body: `{"target_faces": N}` or `{"ratio": 0.0–1.0}` (ratio is of
+  the original input face count), plus optional `"bake": true` to bake
+  color/normal textures into the preview. Returns the LOD's metrics and a
+  `glb_url`.
+- `GET /jobs/{job_id}/lod/{target_faces}/model.glb?baked=` — the LOD glb.
+- `GET /jobs/{job_id}/lods` — all LODs built so far.
+- `POST /jobs/{job_id}/export-lod` — build a LOD and download a zip of the
+  chosen formats (`glb`/`usd`/`obj`) with baked textures.
+
+Because every LOD is produced by **re-running the quad remesher** at a new
+resolution (not QEM edge-collapse), each level stays regular quad-dominant and
+export-ready. High-curvature/feature regions keep denser quads automatically
+(QuadriFlow's field follows curvature), so reducing faces preserves detail where
+it matters. Results are cached per (face bucket, baked) so revisiting a level is
+instant.
+
+## Interactive UI
+
+With the service running, open `http://localhost:8000/ui/` for a Three.js page
+that lets you:
+
+- paste a `job_id` and load it,
+- drag a slider (percentage of the original face count) to re-remesh at a new
+  LOD, previewed live in a rotatable 3D viewer,
+- toggle baked color/normal textures on the preview,
+- read fidelity metrics (actual faces, quad ratio, mean surface error), and
+- export the chosen LOD to glTF/USD/OBJ.
+
 The service and CLI share the same pipeline core (`slam_to_mesh.core.pipeline`)
 and on-disk job manifest, so jobs are inspectable and resumable either way.
 
