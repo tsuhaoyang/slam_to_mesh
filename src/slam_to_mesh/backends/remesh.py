@@ -94,6 +94,15 @@ def available_backends() -> list[str]:
 from .remesh_pymeshlab import PyMeshLabRemeshBackend  # noqa: E402
 
 register_backend("pymeshlab_cpu", PyMeshLabRemeshBackend)
-# Alias: the config default "quadriflow_cpu" maps to our CPU backend until a
-# dedicated QuadriFlow/Instant-Meshes backend is wired on the GPU server.
+# "quadriflow_cpu" is the pymeshlab CPU remesher (isotropic + tri-to-quad
+# pairing). It is the guaranteed-available fallback used by get_backend().
 register_backend("quadriflow_cpu", PyMeshLabRemeshBackend)
+
+# Field-aligned QuadriFlow backend (subprocess). Available only when the
+# quadriflow binary is found; otherwise get_backend() falls back to CPU. The
+# same backend is exposed under a "_gpu" alias — acceleration is a property of
+# how the binary was built, not of the id.
+from .quadriflow import QuadriFlowRemeshBackend
+
+register_backend("quadriflow", QuadriFlowRemeshBackend)
+register_backend("quadriflow_gpu", QuadriFlowRemeshBackend)
