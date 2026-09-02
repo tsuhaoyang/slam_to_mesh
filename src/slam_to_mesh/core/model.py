@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,10 @@ class CleanConfig(BaseModel):
     fill_holes: bool = True
     #: Maximum hole boundary edge count to fill; larger holes are left alone.
     max_hole_edges: int = 300
+    #: Max fill/repair passes. Fragmented SLAM meshes often need a repair pass
+    #: to unblock hole closing, so we retry closing after re-repairing until no
+    #: further boundary edges are closed (or this cap is hit).
+    max_hole_fill_iterations: int = 3
     fix_non_manifold: bool = True
     unify_normals: bool = True
 
@@ -105,7 +109,7 @@ class RemeshConfig(BaseModel):
     #: Preserve sharp features / hard edges during remeshing.
     preserve_sharp: bool = True
     #: Optional path to a feature-line file the user can supply to guide edge flow.
-    feature_lines: Optional[Path] = None
+    feature_lines: Path | None = None
 
 
 class ProjectConfig(BaseModel):
@@ -181,8 +185,8 @@ class MeshStats(BaseModel):
     boundary_edges: int = 0
     non_manifold_edges: int = 0
     is_watertight: bool = False
-    bbox_min: Optional[list[float]] = None
-    bbox_max: Optional[list[float]] = None
+    bbox_min: list[float] | None = None
+    bbox_max: list[float] | None = None
 
 
 class StageResult(BaseModel):
@@ -191,16 +195,16 @@ class StageResult(BaseModel):
     stage: Stage
     status: StageStatus = StageStatus.PENDING
     #: Path to the primary output artifact (mesh or report), relative to job dir.
-    artifact: Optional[str] = None
+    artifact: str | None = None
     #: Additional output paths (e.g. texture files), relative to job dir.
     extra_artifacts: list[str] = Field(default_factory=list)
     #: Effective parameters used, serialized for reproducibility.
     params: dict[str, Any] = Field(default_factory=dict)
     #: Free-form metrics (face counts, distances, timings).
     metrics: dict[str, Any] = Field(default_factory=dict)
-    message: Optional[str] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    message: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
     def mark_running(self) -> None:
         self.status = StageStatus.RUNNING
@@ -225,7 +229,7 @@ class JobManifest(BaseModel):
     #: Job working directory (holds intermediate + final artifacts).
     job_dir: str
     config: PipelineConfig = Field(default_factory=PipelineConfig)
-    input_stats: Optional[MeshStats] = None
+    input_stats: MeshStats | None = None
     results: dict[Stage, StageResult] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -236,20 +240,20 @@ class JobManifest(BaseModel):
             self.results[stage] = StageResult(stage=stage)
         return self.results[stage]
 
-    def artifact_path(self, stage: Stage) -> Optional[Path]:
+    def artifact_path(self, stage: Stage) -> Path | None:
         """Absolute path to a stage's primary artifact, if produced."""
         res = self.results.get(stage)
         if res and res.artifact:
             return Path(self.job_dir) / res.artifact
         return None
 
-    def last_completed_stage(self) -> Optional[Stage]:
+    def last_completed_stage(self) -> Stage | None:
         """The furthest stage (in canonical order) that finished successfully."""
         done = [s for s in STAGE_ORDER if self.results.get(s) and
                 self.results[s].status == StageStatus.DONE]
         return done[-1] if done else None
 
-    def save(self, path: Optional[Path] = None) -> Path:
+    def save(self, path: Path | None = None) -> Path:
         """Persist the manifest to ``job.json`` (or *path*)."""
         self.updated_at = datetime.now(timezone.utc)
         target = path or (Path(self.job_dir) / "job.json")
@@ -258,6 +262,6 @@ class JobManifest(BaseModel):
         return target
 
     @classmethod
-    def load(cls, path: Path) -> "JobManifest":
+    def load(cls, path: Path) -> JobManifest:
         """Load a manifest from disk."""
         return cls.model_validate_json(Path(path).read_text())

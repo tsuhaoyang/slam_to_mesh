@@ -65,20 +65,31 @@ def run(ctx: StageContext) -> StageResult:
         )
         res = backend.remesh(req)
 
-        quads, total, ratio = _quad_ratio_from_obj(out)
+        # Prefer the metrics the backend reports (single source of truth). If a
+        # backend does not report a quad ratio, recompute it from the OBJ.
+        metrics = dict(res.metrics)
+        if "quad_ratio" not in metrics or "polygon_faces" not in metrics:
+            quads, total, ratio = _quad_ratio_from_obj(out)
+            metrics.setdefault("quads", quads)
+            metrics.setdefault("polygon_faces", total)
+            metrics["quad_ratio"] = round(ratio, 6)
+
+        quads = int(metrics.get("quads", 0))
+        total = int(metrics.get("polygon_faces", 0))
+        ratio = float(metrics.get("quad_ratio", 0.0))
 
         result.artifact = ctx.rel(out)
         result.params = cfg.model_dump()
         result.params["backend_used"] = backend.id
-        result.metrics = dict(res.metrics)
-        result.metrics.update(
-            {"quads": quads, "polygon_faces": total, "quad_ratio": round(ratio, 4)}
-        )
+        result.metrics = metrics
         result.message = (
             f"backend={backend.id}, quad_ratio={ratio:.1%}, faces={total}"
         )
+        note = metrics.get("feature_lines_note")
+        if metrics.get("feature_lines_provided") and note:
+            result.message += f"; {note}"
         result.mark_done()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result.mark_failed(f"{type(e).__name__}: {e}")
         raise
     return result

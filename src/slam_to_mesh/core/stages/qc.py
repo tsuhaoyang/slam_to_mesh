@@ -68,9 +68,27 @@ def run(ctx: StageContext) -> StageResult:
             ctx.manifest.input_stats.faces if ctx.manifest.input_stats else None
         )
 
+        # Watertightness: the final UV-unwrapped mesh always reports
+        # not-watertight because xatlas splits vertices along UV seams (a texture
+        # requirement, not a geometric hole). To give a trustworthy signal we
+        # measure watertightness on the pre-unwrap PROJECT mesh, whose topology
+        # reflects the actual surface, and report both.
+        geom_watertight = bool(final.is_watertight)
+        seam_split = False
+        project_path = ctx.manifest.artifact_path(Stage.PROJECT)
+        if project_path is not None and project_path.exists():
+            try:
+                projected = load_mesh(project_path)
+                geom_watertight = bool(projected.is_watertight)
+                # If the pre-seam mesh is watertight but the final isn't, the
+                # difference is purely UV-seam vertex splitting.
+                seam_split = geom_watertight and not final.is_watertight
+            except Exception:  # noqa: BLE001, S110 - best-effort; keep final's reading
+                pass
+
         report = {
-            "final_vertices": int(len(final.vertices)),
-            "final_faces": int(len(final.faces)),
+            "final_vertices": len(final.vertices),
+            "final_faces": len(final.faces),
             "input_faces": input_faces,
             "face_reduction_ratio": (
                 round(1.0 - len(final.faces) / input_faces, 4)
@@ -82,7 +100,13 @@ def run(ctx: StageContext) -> StageResult:
             "hausdorff_pct_bbox": round(hausdorff / diag * 100, 4),
             "mean_surface_distance": round(mean_dist, 6),
             "mean_dist_pct_bbox": round(mean_dist / diag * 100, 4),
-            "is_watertight": bool(final.is_watertight),
+            # Geometric watertightness (measured pre-unwrap, so UV seams don't
+            # create false holes). This is the number to trust.
+            "is_watertight": geom_watertight,
+            # Raw watertightness of the exported UV mesh (usually False due to
+            # seam vertex splits — expected, not a defect).
+            "final_mesh_watertight": bool(final.is_watertight),
+            "seam_vertex_split": bool(seam_split),
             "is_winding_consistent": bool(final.is_winding_consistent),
             "bbox_diagonal": round(diag, 6),
         }
@@ -92,14 +116,18 @@ def run(ctx: StageContext) -> StageResult:
 
         result.artifact = ctx.rel(out)
         result.metrics = report
+        wt = report["is_watertight"]
+        wt_str = str(wt)
+        if report["seam_vertex_split"]:
+            wt_str += " (final split by UV seams — expected)"
         result.message = (
             f"faces={report['final_faces']} "
             f"quad={report['quad_ratio']:.0%} "
             f"meanDist={report['mean_dist_pct_bbox']:.3f}%bbox "
-            f"watertight={report['is_watertight']}"
+            f"watertight={wt_str}"
         )
         result.mark_done()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result.mark_failed(f"{type(e).__name__}: {e}")
         raise
     return result

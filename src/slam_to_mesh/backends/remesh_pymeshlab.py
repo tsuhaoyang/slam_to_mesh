@@ -18,14 +18,35 @@ material authoring. A GPU backend can replace it later via the registry.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 from ..core import _libfix
 
 _libfix.ensure_opengl_loaded()
 
-import pymeshlab as ml  # noqa: E402 - after OpenGL preload
+import pymeshlab as ml
 
 from .remesh import RemeshRequest, RemeshResult
+
+
+def _count_quads(path) -> tuple[int, int]:
+    """Count (quad_faces, total_polygon_faces) in an OBJ file.
+
+    pymeshlab writes native polygon faces to OBJ, so a face line with four
+    vertex references is a quad. Returns (0, 0) if the file cannot be read.
+    """
+    quads = 0
+    total = 0
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("f "):
+                    total += 1
+                    if len(line.split()) - 1 == 4:
+                        quads += 1
+    except OSError:
+        return 0, 0
+    return quads, total
 
 
 def _target_edge_length(target_faces: int, bbox_diag: float) -> float:
@@ -66,6 +87,25 @@ class PyMeshLabRemeshBackend:
         tris_before = ms.current_mesh().face_number()
         target_len = _target_edge_length(req.target_faces, req.bbox_diagonal)
 
+        # Feature-line handling. A user-supplied feature-line file is meant to
+        # guide edge flow. The pymeshlab CPU backend detects features internally
+        # by dihedral angle (``featuredeg``) and cannot consume an arbitrary
+        # external feature-line file, so we surface exactly what happened rather
+        # than silently ignoring the parameter. A field-aligned GPU backend
+        # (Instant Meshes / QuadriFlow) can honor such a file when wired in.
+        feature_lines_provided = req.feature_lines is not None
+        feature_lines_used = False
+        feature_note = None
+        if feature_lines_provided:
+            fl = Path(req.feature_lines)
+            if not fl.exists():
+                feature_note = f"feature_lines file not found: {fl}"
+            else:
+                feature_note = (
+                    "feature_lines provided but not consumed by pymeshlab_cpu; "
+                    "using dihedral-angle feature detection (featuredeg) instead"
+                )
+
         # 1. Regularize the triangulation.
         feature_deg = 30.0 if req.preserve_sharp else 180.0
         ms.meshing_isotropic_explicit_remeshing(
@@ -78,7 +118,6 @@ class PyMeshLabRemeshBackend:
         )
         tris_remeshed = ms.current_mesh().face_number()
 
-        quad_ratio = 0.0
         # 2. Convert to quad-dominant.
         if req.quads:
             try:
@@ -91,14 +130,24 @@ class PyMeshLabRemeshBackend:
 
         faces_after = ms.current_mesh().face_number()
 
+        # Measure the true quad ratio from the saved polygon mesh. pymeshlab
+        # writes native polygon faces to OBJ, so 4-vertex ``f`` lines are quads.
+        quads, polygon_faces = _count_quads(req.output_path)
+        quad_ratio = (quads / polygon_faces) if polygon_faces else 0.0
+
         return RemeshResult(
             output_path=req.output_path,
             metrics={
                 "tris_before": int(tris_before),
                 "tris_remeshed": int(tris_remeshed),
                 "faces_after": int(faces_after),
+                "polygon_faces": int(polygon_faces),
+                "quads": int(quads),
                 "target_edge_length": round(target_len, 6),
                 "quad_pairing": bool(req.quads),
-                "quad_ratio": quad_ratio,
+                "quad_ratio": round(quad_ratio, 6),
+                "feature_lines_provided": bool(feature_lines_provided),
+                "feature_lines_used": bool(feature_lines_used),
+                "feature_lines_note": feature_note,
             },
         )
