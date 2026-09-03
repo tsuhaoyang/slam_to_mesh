@@ -128,11 +128,15 @@ representation disables it (and vice versa).
 
 ### Inputs
 
-The service accepts **triangle meshes** (`.ply/.obj/.stl/.glb/.off`) and **point
-clouds** (`.ply` points / `.pcd` / `.xyz`). Point clouds are reconstructed to a
-triangle mesh (Open3D Poisson) at ingest so the surface pipeline can run; the
-original points are retained for the point-cloud viewer and downsampling. (2D
-image → 3D via TripoSR is a paused/pending track; see `TripoSR/INSTALL_STEPS.md`.)
+The service accepts **triangle meshes** (`.ply/.obj/.stl/.glb/.off`), **point
+clouds** (`.ply` points / `.pcd` / `.xyz`), and **2D images**
+(`.png/.jpg/.webp`). Point clouds are reconstructed to a triangle mesh (Open3D
+Poisson) at ingest so the surface pipeline can run; the original points are
+retained for the point-cloud viewer and downsampling. Images are turned into a
+3D mesh with **TripoSR** (single-image reconstruction) at ingest, then the normal
+pipeline runs. TripoSR runs in its own isolated venv and is called out of
+process; if it is not installed the image input is simply unavailable (see
+`GET /capabilities` and `docs/triposr_2d_to_3d.md`).
 
 The service and CLI share the same pipeline core (`slam_to_mesh.core.pipeline`)
 and on-disk job manifest, so jobs are inspectable and resumable either way.

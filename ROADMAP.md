@@ -134,22 +134,20 @@ Spec: `docs/spec_flexible_io.md`.
 - Verified via Playwright (mesh → 3 synced panes; point cloud → downsample compare
   with correct gating). 80 tests pass.
 
-### 2D image → 3D (TripoSR) — **feasibility VALIDATED, integration deferred**
-Verified end-to-end on this machine (RTX 5060 / sm_120, CUDA 13.3): a single
-image → TripoSR → 84k-face watertight mesh → `slam2mesh` → 3,008-face 100% quad,
-watertight, 0.069%-bbox error. See `TripoSR/INSTALL_STEPS.md` and
-`reports/triposr_pipeline.png`.
+### 2D image → 3D (TripoSR) — **INTEGRATED**
+Image input is a first-class input type. Ingest detects `.png/.jpg/.jpeg/.webp`,
+calls TripoSR out of process (isolated venv, via `core/image_to_mesh.py`) to
+generate a mesh, then the normal pipeline runs; `input_kind = "image"`. Gated by
+availability like the QuadriFlow binary — if TripoSR isn't installed the service
+returns 503 for image uploads and `GET /capabilities` reports `image_input:
+false`. Verified end-to-end (chair.png → 84k-face mesh → 3,008-face quad).
 
 TripoSR is MIT-licensed (VAST-AI-Research; Tripo AI + Stability AI), incl.
-weights. It runs in its own isolated venv. Two obstacles were solved: (1) needs
-PyTorch **nightly cu128** for sm_120; (2) `torchmcubes` won't build against torch
-2.12 nightly + CUDA 13, so its single marching-cubes call was replaced with
-**scikit-image CPU** marching cubes (inference stays on GPU).
-
-**Not integrated** into the service/pipeline yet (deferred by decision). Plan:
-image branch at ingest shells out to the TripoSR venv via subprocess, produces a
-mesh, then the normal pipeline runs; gate behind availability like the QuadriFlow
-binary; accept `.png/.jpg` in `POST /jobs` with `input_kind = "image"`.
+weights, and runs in its own venv. Two obstacles solved: (1) needs PyTorch
+**nightly cu128** for sm_120; (2) `torchmcubes` won't build against torch 2.12
+nightly + CUDA 13, so its single marching-cubes call was replaced with
+**scikit-image CPU** marching cubes (inference stays on GPU). Install notes:
+`docs/triposr_2d_to_3d.md`; the isosurface patch: `docs/triposr_isosurface_cpu.patch`.
 
 ### Known limitation
 - Re-remeshing at high face targets is slow (QuadriFlow ~1–2 s small, tens of

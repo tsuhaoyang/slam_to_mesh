@@ -375,3 +375,26 @@ def test_pointcloud_download(client: TestClient, tmp_path: Path):
     r = client.get(f"/jobs/{job_id}/pointcloud/download")
     assert r.status_code == 200
     assert len(r.content) > 0
+
+
+def test_capabilities_endpoint(client: TestClient):
+    r = client.get("/capabilities")
+    assert r.status_code == 200
+    body = r.json()
+    assert "image_input" in body
+    assert ".png" in body["image_exts"]
+    assert isinstance(body["backends"], list)
+
+
+def test_image_upload_rejected_when_triposr_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Image upload returns 503 when TripoSR isn't available (deterministic)."""
+    import slam_to_mesh.core.image_to_mesh as i2m
+
+    monkeypatch.setattr(i2m, "is_available", lambda: False)
+    r = client.post(
+        "/jobs",
+        files={"file": ("pic.png", b"not-a-real-image", "image/png")},
+    )
+    assert r.status_code == 503
