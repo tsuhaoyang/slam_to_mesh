@@ -1,0 +1,67 @@
+diff --git a/tsr/models/isosurface.py b/tsr/models/isosurface.py
+index 076321b..b4d2948 100644
+--- a/tsr/models/isosurface.py
++++ b/tsr/models/isosurface.py
+@@ -3,7 +3,39 @@ from typing import Callable, Optional, Tuple
+ import numpy as np
+ import torch
+ import torch.nn as nn
+-from torchmcubes import marching_cubes
++
++# torchmcubes does not build against very new PyTorch nightlies / CUDA 13, and
++# TripoSR only needs marching cubes for the final iso-surface extraction (the
++# heavy neural inference stays on the GPU). We use scikit-image's CPU marching
++# cubes as a dependency-light, build-free replacement. It costs a few extra
++# seconds but produces the same surface.
++from skimage import measure
++
++
++def _skimage_marching_cubes(volume: torch.Tensor, threshold: float):
++    """Drop-in for torchmcubes.marching_cubes.
++
++    Args:
++        volume: (R, R, R) float tensor of the (already sign-flipped) field.
++        threshold: iso level.
++    Returns:
++        (verts, faces) as float / long tensors, matching torchmcubes' output
++        conventions (verts in index space, x/y/z order).
++    """
++    vol = volume.detach().cpu().numpy().astype(np.float32)
++    try:
++        verts, faces, _normals, _values = measure.marching_cubes(vol, level=threshold)
++    except (ValueError, RuntimeError):
++        # No surface crossed the iso level → empty mesh.
++        return (
++            torch.zeros((0, 3), dtype=torch.float32),
++            torch.zeros((0, 3), dtype=torch.long),
++        )
++    # skimage returns verts in (i, j, k) == array-index order, which matches the
++    # (x, y, z) indexing torchmcubes returns before TripoSR's [2,1,0] swap.
++    v = torch.from_numpy(np.ascontiguousarray(verts)).float()
++    f = torch.from_numpy(np.ascontiguousarray(faces)).long()
++    return v, f
+ 
+ 
+ class IsosurfaceHelper(nn.Module):
+@@ -18,7 +50,7 @@ class MarchingCubeHelper(IsosurfaceHelper):
+     def __init__(self, resolution: int) -> None:
+         super().__init__()
+         self.resolution = resolution
+-        self.mc_func: Callable = marching_cubes
++        self.mc_func: Callable = _skimage_marching_cubes
+         self._grid_vertices: Optional[torch.FloatTensor] = None
+ 
+     @property
+@@ -42,11 +74,7 @@ class MarchingCubeHelper(IsosurfaceHelper):
+         level: torch.FloatTensor,
+     ) -> Tuple[torch.FloatTensor, torch.LongTensor]:
+         level = -level.view(self.resolution, self.resolution, self.resolution)
+-        try:
+-            v_pos, t_pos_idx = self.mc_func(level.detach(), 0.0)
+-        except AttributeError:
+-            print("torchmcubes was not compiled with CUDA support, use CPU version instead.")
+-            v_pos, t_pos_idx = self.mc_func(level.detach().cpu(), 0.0)
++        v_pos, t_pos_idx = self.mc_func(level.detach(), 0.0)
+         v_pos = v_pos[..., [2, 1, 0]]
+         v_pos = v_pos / (self.resolution - 1.0)
+         return v_pos.to(level.device), t_pos_idx.to(level.device)

@@ -134,9 +134,22 @@ Spec: `docs/spec_flexible_io.md`.
 - Verified via Playwright (mesh → 3 synced panes; point cloud → downsample compare
   with correct gating). 80 tests pass.
 
-### Pending
-- **2D image → 3D (TripoSR)**: paused. Install steps drafted in
-  `TripoSR/INSTALL_STEPS.md`; not integrated.
+### 2D image → 3D (TripoSR) — **feasibility VALIDATED, integration deferred**
+Verified end-to-end on this machine (RTX 5060 / sm_120, CUDA 13.3): a single
+image → TripoSR → 84k-face watertight mesh → `slam2mesh` → 3,008-face 100% quad,
+watertight, 0.069%-bbox error. See `TripoSR/INSTALL_STEPS.md` and
+`reports/triposr_pipeline.png`.
+
+TripoSR is MIT-licensed (VAST-AI-Research; Tripo AI + Stability AI), incl.
+weights. It runs in its own isolated venv. Two obstacles were solved: (1) needs
+PyTorch **nightly cu128** for sm_120; (2) `torchmcubes` won't build against torch
+2.12 nightly + CUDA 13, so its single marching-cubes call was replaced with
+**scikit-image CPU** marching cubes (inference stays on GPU).
+
+**Not integrated** into the service/pipeline yet (deferred by decision). Plan:
+image branch at ingest shells out to the TripoSR venv via subprocess, produces a
+mesh, then the normal pipeline runs; gate behind availability like the QuadriFlow
+binary; accept `.png/.jpg` in `POST /jobs` with `input_kind = "image"`.
 
 ### Known limitation
 - Re-remeshing at high face targets is slow (QuadriFlow ~1–2 s small, tens of
