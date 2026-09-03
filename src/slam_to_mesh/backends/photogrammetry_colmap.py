@@ -1,16 +1,19 @@
 """COLMAP photogrammetry backend (subprocess).
 
-Runs COLMAP's automatic reconstruction over an image folder to produce a dense
-point cloud (Structure-from-Motion + Multi-View Stereo), which the rest of the
-pipeline consumes via the existing point-cloud path.
+Runs COLMAP to reconstruct a point cloud from an image folder:
 
-Availability: a ``colmap`` executable on PATH, or the ``COLMAP_BIN`` env var.
-Dense MVS uses the GPU when COLMAP is built with CUDA; otherwise it runs on CPU
-(slower). When COLMAP is absent, :meth:`is_available` is False and image-set /
-video inputs are simply unavailable.
+* Sparse SfM (``feature_extractor`` → ``exhaustive_matcher`` → ``mapper``) always
+  runs — it works on CPU.
+* Dense MVS (``image_undistorter`` → ``patch_match_stereo`` → ``stereo_fusion``)
+  runs **only when the COLMAP build supports CUDA** (dense stereo requires it).
+  When CUDA is unavailable we fall back to exporting the **sparse** SfM points
+  (``model_converter`` → PLY) — fewer points, but the pipeline still completes.
 
-Install is deferred (see ``docs/spec_photogrammetry.md`` / ROADMAP). We shell out
-rather than bind, matching the QuadriFlow backend's approach.
+The resulting point cloud flows into the existing point-cloud path. Availability:
+a ``colmap`` executable on PATH, or the ``COLMAP_BIN`` env var. We shell out
+rather than bind, matching the QuadriFlow backend.
+
+Install is deferred (see ``docs/spec_photogrammetry.md`` / ROADMAP).
 """
 
 from __future__ import annotations
@@ -40,6 +43,18 @@ class ColmapBackend:
     def is_available(self) -> bool:
         return find_colmap_bin() is not None
 
+    def _has_cuda(self, binary: str) -> bool:
+        """True if this COLMAP build supports CUDA dense stereo."""
+        try:
+            out = subprocess.run(
+                [binary, "patch_match_stereo", "-h"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            text = (out.stdout + out.stderr).lower()
+            return "requires cuda" not in text
+        except Exception:  # noqa: BLE001
+            return False
+
     def reconstruct(self, images_dir: Path, out_points: Path) -> dict:
         binary = find_colmap_bin()
         if binary is None:
@@ -61,47 +76,101 @@ class ColmapBackend:
 
         out_points = Path(out_points)
         out_points.parent.mkdir(parents=True, exist_ok=True)
-        workspace = out_points.parent / "_colmap_ws"
-        workspace.mkdir(parents=True, exist_ok=True)
+        ws = out_points.parent / "_colmap_ws"
+        ws.mkdir(parents=True, exist_ok=True)
 
-        gpu = "1" if self.use_gpu else "0"
-        cmd = [
-            binary, "automatic_reconstructor",
-            "--workspace_path", str(workspace),
-            "--image_path", str(images_dir),
-            "--dense", "1",
-            "--use_gpu", gpu,
-        ]
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=self.timeout, check=False
-        )
+        dense_ok = self.use_gpu and self._has_cuda(binary)
+        db = ws / "database.db"
+        sparse = ws / "sparse"
+        sparse.mkdir(exist_ok=True)
+        gpu_flag = "1" if self.use_gpu else "0"
 
-        fused = self._find_fused_ply(workspace)
-        if proc.returncode != 0 or fused is None:
-            tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-6:]
-            raise RuntimeError(
-                f"COLMAP failed (rc={proc.returncode}): {' | '.join(tail)}"
+        def _run(args: list[str]) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [binary, *args], capture_output=True, text=True,
+                timeout=self.timeout, check=False,
             )
 
-        # Normalize the fused dense cloud to our expected output path.
-        _copy_or_convert_points(fused, out_points)
+        # --- Sparse SfM (always; CPU-capable) ---
+        steps = [
+            ["feature_extractor", "--database_path", str(db),
+             "--image_path", str(images_dir),
+             "--SiftExtraction.use_gpu", gpu_flag],
+            ["exhaustive_matcher", "--database_path", str(db),
+             "--SiftMatching.use_gpu", gpu_flag],
+            ["mapper", "--database_path", str(db),
+             "--image_path", str(images_dir), "--output_path", str(sparse)],
+        ]
+        for args in steps:
+            proc = _run(args)
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-6:]
+                raise RuntimeError(
+                    f"COLMAP {args[0]} failed (rc={proc.returncode}): "
+                    f"{' | '.join(tail)}"
+                )
 
+        model_dir = self._first_sparse_model(sparse)
+        if model_dir is None:
+            raise RuntimeError(
+                "COLMAP sparse reconstruction produced no model (too few "
+                "matches — capture more overlapping, sharp, textured views)"
+            )
+
+        used = "sparse"
+        points_ply: Path | None = None
+
+        if dense_ok:
+            # --- Dense MVS (CUDA only) ---
+            dense = ws / "dense"
+            dense.mkdir(exist_ok=True)
+            for args in [
+                ["image_undistorter", "--image_path", str(images_dir),
+                 "--input_path", str(model_dir), "--output_path", str(dense),
+                 "--output_type", "COLMAP"],
+                ["patch_match_stereo", "--workspace_path", str(dense)],
+                ["stereo_fusion", "--workspace_path", str(dense),
+                 "--output_path", str(dense / "fused.ply")],
+            ]:
+                proc = _run(args)
+                if proc.returncode != 0:
+                    break
+            fused = dense / "fused.ply"
+            if fused.exists():
+                used = "dense"
+                points_ply = fused
+
+        if points_ply is None:
+            # Sparse fallback: export the sparse SfM points as PLY.
+            points_ply = ws / "sparse_points.ply"
+            proc = _run([
+                "model_converter", "--input_path", str(model_dir),
+                "--output_path", str(points_ply), "--output_type", "PLY",
+            ])
+            if proc.returncode != 0 or not points_ply.exists():
+                tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-6:]
+                raise RuntimeError(
+                    f"COLMAP model_converter failed: {' | '.join(tail)}"
+                )
+
+        _copy_or_convert_points(points_ply, out_points)
         return {
             "backend": self.id,
             "images": len(imgs),
-            "dense_ply": str(fused),
+            "reconstruction": used,  # "dense" (CUDA) or "sparse" (CPU fallback)
             "points": str(out_points),
         }
 
     @staticmethod
-    def _find_fused_ply(workspace: Path) -> Path | None:
-        """Locate the dense fused point cloud COLMAP produced."""
-        # automatic_reconstructor writes dense/<i>/fused.ply
-        candidates = sorted(workspace.glob("dense/*/fused.ply"))
-        if candidates:
-            return candidates[0]
-        any_fused = sorted(workspace.rglob("fused.ply"))
-        return any_fused[0] if any_fused else None
+    def _first_sparse_model(sparse_dir: Path) -> Path | None:
+        """COLMAP writes sparse models under sparse/0, sparse/1, …"""
+        for sub in sorted(sparse_dir.glob("*")):
+            if (sub / "cameras.bin").exists() or (sub / "cameras.txt").exists():
+                return sub
+        # Some versions write directly into sparse/.
+        if (sparse_dir / "cameras.bin").exists():
+            return sparse_dir
+        return None
 
 
 def _copy_or_convert_points(src_ply: Path, out_points: Path) -> None:

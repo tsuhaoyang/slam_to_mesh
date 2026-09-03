@@ -158,7 +158,7 @@ nightly + CUDA 13, so its single marching-cubes call was replaced with
   seconds for very dense targets); the UI is snappy at low percentages. A
   precomputed LOD ladder would remove the wait (future optimization).
 
-## Feature: Multi-view photogrammetry input (images / video) — **CODE DONE, real e2e pending COLMAP**
+## Feature: Multi-view photogrammetry input (images / video) — **DONE (validated end-to-end)**
 
 Spec: `docs/spec_photogrammetry.md`. Measurement-based 3D for rigid,
 straight-edged objects that single-image generation distorts.
@@ -178,6 +178,13 @@ straight-edged objects that single-image generation distorts.
 - Tests: frames extraction, registry availability/graceful-absent, ingest
   zip→photogrammetry routing. All pass with COLMAP absent (99 passed, 2 skipped).
 
-**Pending**: install COLMAP (`sudo apt install colmap`, or a CUDA build for GPU
-MVS) and run a real end-to-end on an actual photo set / video. Everything else is
-implemented and unit-verified.
+**Validated end-to-end** with COLMAP 3.7 (CPU build) on a 25-image set: SfM →
+8k-point cloud (~5 min CPU) → Poisson → QuadriFlow → 6,746-face 100% quad, via
+the service (`input_kind=images`, `has_pointcloud=True`).
+
+Note on COLMAP builds: **dense MVS (`patch_match_stereo`) requires CUDA**. The
+apt/CPU build cannot do dense, so the backend detects this and **falls back to
+exporting the sparse SfM points** (fewer points, but the pipeline completes). A
+CUDA COLMAP build would yield a much denser cloud. Capture guidance:
+overlapping, sharp, textured views (10–50); too few/non-overlapping images make
+SfM fail to create a model.
