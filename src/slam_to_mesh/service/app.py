@@ -84,6 +84,19 @@ def backends() -> dict:
     return {"backends": available_backends()}
 
 
+@app.get("/capabilities")
+def capabilities() -> dict:
+    """Feature availability for the UI (e.g. whether image input is possible)."""
+    from ..core.image_to_mesh import IMAGE_EXTS
+    from ..core.image_to_mesh import is_available as triposr_available
+
+    return {
+        "image_input": triposr_available(),
+        "image_exts": sorted(IMAGE_EXTS),
+        "backends": available_backends(),
+    }
+
+
 @app.post("/jobs", status_code=202)
 async def create_and_run_job(
     file: UploadFile = File(...),
@@ -94,9 +107,18 @@ async def create_and_run_job(
     formats: str = Form("glb,obj"),
     project: bool = Form(True),
 ) -> dict:
-    """Accept a mesh upload, create a job, and start processing in background."""
-    suffix = Path(file.filename or "input.ply").suffix or ".ply"
-    if suffix.lower() not in {".ply", ".obj", ".stl", ".off", ".glb"}:
+    """Accept a mesh / point-cloud / image upload, create a job, and process."""
+    suffix = (Path(file.filename or "input.ply").suffix or ".ply").lower()
+    mesh_exts = {".ply", ".obj", ".stl", ".off", ".glb"}
+    pointcloud_exts = {".pcd", ".xyz", ".xyzn", ".pts"}
+    from ..core.image_to_mesh import IMAGE_EXTS, is_available as triposr_available
+
+    if suffix in IMAGE_EXTS:
+        if not triposr_available():
+            raise HTTPException(
+                503, "image input needs TripoSR, which is not available on this server"
+            )
+    elif suffix not in mesh_exts | pointcloud_exts:
         raise HTTPException(400, f"Unsupported input format: {suffix}")
 
     JOBS_ROOT.mkdir(parents=True, exist_ok=True)

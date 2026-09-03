@@ -16,6 +16,7 @@ import shutil
 from pathlib import Path
 
 from ..context import StageContext
+from ..image_to_mesh import generate_mesh, is_available, is_image_file
 from ..meshio import compute_stats, load_mesh, save_mesh
 from ..model import Stage, StageResult
 from ..pointcloud import is_point_cloud_file, reconstruct_poisson
@@ -28,7 +29,22 @@ def run(ctx: StageContext) -> StageResult:
         src = ctx.input_for(Stage.INGEST)
 
         recon_stats = None
-        if is_point_cloud_file(src):
+        image_src = None
+        if is_image_file(src):
+            # Image input: generate a 3D mesh with TripoSR (isolated venv,
+            # subprocess), then treat that mesh as the ingest source.
+            if not is_available():
+                raise RuntimeError(
+                    "image input requires TripoSR (not available); see "
+                    "docs/triposr_2d_to_3d.md"
+                )
+            ctx.manifest.input_kind = "image"
+            image_src = src
+            gen_mesh = ctx.job_dir / "00_generated.obj"
+            gen_mesh.parent.mkdir(parents=True, exist_ok=True)
+            generate_mesh(src, gen_mesh)
+            mesh = load_mesh(gen_mesh)
+        elif is_point_cloud_file(src):
             # Point-cloud input: retain the original points, then reconstruct a
             # triangle mesh to feed the rest of the pipeline.
             ctx.manifest.input_kind = "pointcloud"
@@ -63,9 +79,13 @@ def run(ctx: StageContext) -> StageResult:
         }
         if recon_stats is not None:
             result.metrics["reconstructed_from_points"] = recon_stats["input_points"]
+        if image_src is not None:
+            result.metrics["generated_from_image"] = str(image_src)
 
         # Human-readable problem summary.
         problems = []
+        if ctx.manifest.input_kind == "image":
+            problems.append("generated from image (TripoSR)")
         if ctx.manifest.input_kind == "pointcloud":
             problems.append(
                 f"reconstructed from {recon_stats['input_points']} points"
