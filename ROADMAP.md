@@ -110,3 +110,35 @@ QEM would not). `core/lod.py::build_lod` produces + caches each LOD; LOD API
 endpoints (`POST /lod`, `GET /lod/{n}/model.glb`, `GET /lods`, `POST /export-lod`)
 extend the service; the Three.js frontend is served as static assets. Verified
 end-to-end (build + cache + glb download + export zip); 64 tests pass.
+
+## Feature: Flexible inputs + multi-view + point clouds — **DONE**
+
+Spec: `docs/spec_flexible_io.md`.
+
+- **Inputs**: triangle mesh **or** point cloud. Point clouds are Poisson-
+  reconstructed to a mesh at ingest (`core/pointcloud.py`), original points
+  retained (`00_points.ply`); `input_kind`/`has_pointcloud` on the manifest.
+- **Multi-view UI**: six checkbox representations — triangle, triangle-decimated
+  (QEM), quad, quad-decimated (QuadriFlow), point cloud, point-cloud-downsample
+  (voxel). Each opens its own synced Three.js pane; layout is dynamic.
+- **Independent decimation**: triangle (QEM, exact faces) and quad (QuadriFlow,
+  re-remesh) have separate sliders; point-cloud voxel downsample is a separate
+  slider. They do not drive each other (no point↔mesh correspondence).
+- **Gating**: point-cloud downsample is selectable only when the point cloud is
+  shown alone; any mesh representation disables it and vice versa.
+- **Point-cloud ops**: generate from a mesh surface (opt-in) and download
+  original/downsampled points.
+- API: `POST /tri-lod`, `GET /tri-lod/{n}/model.glb`, `GET /pointcloud.json`,
+  `POST /pointcloud/downsample`, `POST /pointcloud/generate`,
+  `GET /pointcloud/download`, plus `input_kind`/`has_pointcloud` on `GET /jobs/{id}`.
+- Verified via Playwright (mesh → 3 synced panes; point cloud → downsample compare
+  with correct gating). 80 tests pass.
+
+### Pending
+- **2D image → 3D (TripoSR)**: paused. Install steps drafted in
+  `TripoSR/INSTALL_STEPS.md`; not integrated.
+
+### Known limitation
+- Re-remeshing at high face targets is slow (QuadriFlow ~1–2 s small, tens of
+  seconds for very dense targets); the UI is snappy at low percentages. A
+  precomputed LOD ladder would remove the wait (future optimization).

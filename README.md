@@ -106,23 +106,42 @@ instant.
 
 ## Interactive UI
 
-With the service running, open `http://localhost:8000/ui/` for a Three.js page
-that lets you:
+With the service running, open `http://localhost:8000/ui/` for a Three.js
+multi-view page that lets you:
 
 - paste a `job_id` and load it,
-- drag a slider (percentage of the original face count) to re-remesh at a new
-  LOD, previewed live in a rotatable 3D viewer,
-- toggle baked color/normal textures on the preview,
-- read fidelity metrics (actual faces, quad ratio, mean surface error), and
-- export the chosen LOD to glTF/USD/OBJ.
+- choose which **representations** to display via checkboxes — each opens its own
+  synced, rotatable viewer pane:
+  - **Triangle mesh** (the normalized/ingest surface),
+  - **Triangle — decimated** (QEM edge-collapse, exact target face count),
+  - **Quad mesh** and **Quad — decimated** (field-aligned QuadriFlow, shown as a
+    real quad wireframe),
+  - **Point cloud** and **Point cloud — downsample** (Open3D voxel),
+- drive independent sliders per representation (triangle faces, quad faces,
+  point count),
+- read fidelity metrics (actual faces, quad ratio, mean surface error),
+- generate a point cloud from a mesh input and download point clouds.
+
+Gating: point-cloud downsampling is a dedicated original-vs-reduced compare mode,
+selectable only when the point cloud is shown alone; selecting any mesh
+representation disables it (and vice versa).
+
+### Inputs
+
+The service accepts **triangle meshes** (`.ply/.obj/.stl/.glb/.off`) and **point
+clouds** (`.ply` points / `.pcd` / `.xyz`). Point clouds are reconstructed to a
+triangle mesh (Open3D Poisson) at ingest so the surface pipeline can run; the
+original points are retained for the point-cloud viewer and downsampling. (2D
+image → 3D via TripoSR is a paused/pending track; see `TripoSR/INSTALL_STEPS.md`.)
 
 The service and CLI share the same pipeline core (`slam_to_mesh.core.pipeline`)
 and on-disk job manifest, so jobs are inspectable and resumable either way.
 
 ## GPU note
 
-Every stage runs on CPU today. The remesh stage goes through a backend registry
-(`slam_to_mesh.backends.remesh`), so a GPU field-aligned remesher
-(Instant Meshes / QuadriFlow) can be registered and selected via
-`--backend`/`RemeshConfig.backend` on a GPU server without touching the core.
+The remesh stage goes through a backend registry
+(`slam_to_mesh.backends.remesh`). A field-aligned **QuadriFlow** backend is wired
+in (built from source); it is selected via `--backend quadriflow` /
+`RemeshConfig.backend`, and the registry falls back to the CPU remesher when the
+binary is absent so the pipeline always completes.
 
