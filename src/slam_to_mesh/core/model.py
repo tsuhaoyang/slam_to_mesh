@@ -162,6 +162,11 @@ class PipelineConfig(BaseModel):
     #: Single-image → 3D backend id (e.g. "triposr"; "trellis" later). None =
     #: auto-pick the first available image3d backend.
     image_backend: str | None = "triposr"
+    #: Multi-view photogrammetry backend id (e.g. "colmap"). None = first
+    #: available. Used for image-set (.zip) and video inputs.
+    photogrammetry_backend: str | None = "colmap"
+    #: Number of frames to sample from a video input before reconstruction.
+    video_frames: int = 40
 
 
 # --------------------------------------------------------------------------- #

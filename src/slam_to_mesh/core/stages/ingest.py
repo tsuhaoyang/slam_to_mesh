@@ -13,9 +13,11 @@ viewer and downsampling.
 from __future__ import annotations
 
 import shutil
+import zipfile
 from pathlib import Path
 
 from ..context import StageContext
+from ..frames import extract_frames, is_video_file
 from ..image_to_mesh import generate_mesh, is_available, is_image_file
 from ..meshio import compute_stats, load_mesh, save_mesh
 from ..model import Stage, StageResult
@@ -46,6 +48,19 @@ def run(ctx: StageContext) -> StageResult:
             gen_mesh.parent.mkdir(parents=True, exist_ok=True)
             gen_stats = generate_mesh(src, gen_mesh, backend_id=backend_id)
             mesh = load_mesh(gen_mesh)
+        elif is_video_file(src) or Path(src).suffix.lower() == ".zip":
+            # Multi-view input: images (.zip) or video (frames) → photogrammetry
+            # → dense point cloud, then reuse the point-cloud path (Poisson).
+            kind = "video" if is_video_file(src) else "images"
+            ctx.manifest.input_kind = kind
+            points_out = ctx.job_dir / "00_points.ply"
+            recon_stats = _photogrammetry_points(ctx, src, kind, points_out)
+            ctx.manifest.has_pointcloud = True
+
+            recon_mesh = ctx.job_dir / "00_reconstructed.ply"
+            poisson_stats = reconstruct_poisson(points_out, recon_mesh)
+            recon_stats.update(poisson_stats)
+            mesh = load_mesh(recon_mesh)
         elif is_point_cloud_file(src):
             # Point-cloud input: retain the original points, then reconstruct a
             # triangle mesh to feed the rest of the pipeline.
@@ -89,6 +104,12 @@ def run(ctx: StageContext) -> StageResult:
         problems = []
         if ctx.manifest.input_kind == "image":
             problems.append("generated from image (TripoSR)")
+        if ctx.manifest.input_kind in ("images", "video"):
+            n_imgs = recon_stats.get("images") if recon_stats else None
+            problems.append(
+                f"photogrammetry from {n_imgs} views" if n_imgs
+                else "photogrammetry reconstruction"
+            )
         if ctx.manifest.input_kind == "pointcloud":
             problems.append(
                 f"reconstructed from {recon_stats['input_points']} points"
@@ -119,3 +140,45 @@ def _copy_points(src: Path, dst: Path) -> None:
 
         pcd = o3d.io.read_point_cloud(str(src))
         o3d.io.write_point_cloud(str(dst), pcd)
+
+
+def _photogrammetry_points(ctx, src: Path, kind: str, points_out: Path) -> dict:
+    """Prepare an images dir (from zip/video) and run photogrammetry → points.
+
+    Returns the backend's stats dict. Raises RuntimeError with a clear message
+    when no photogrammetry backend is available.
+    """
+    from ...backends import photogrammetry as pg
+
+    src = Path(src)
+    images_dir = ctx.job_dir / "00_images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    if kind == "video":
+        n = int(ctx.manifest.config.video_frames)
+        count = extract_frames(src, images_dir, n=n)
+        if count == 0:
+            raise RuntimeError(f"no frames extracted from video {src.name}")
+    else:  # images zip
+        with zipfile.ZipFile(src) as zf:
+            for member in zf.namelist():
+                name = Path(member).name
+                if not name or member.endswith("/"):
+                    continue
+                if Path(name).suffix.lower() in {
+                    ".png", ".jpg", ".jpeg", ".webp", ".bmp"
+                }:
+                    # Flatten into images_dir (ignore archive subfolders).
+                    with zf.open(member) as fh, open(images_dir / name, "wb") as out:
+                        shutil.copyfileobj(fh, out)
+
+    backend_id = ctx.manifest.config.photogrammetry_backend
+    backend = pg.get_backend(backend_id)
+    if backend is None:
+        raise RuntimeError(
+            "image-set / video input requires a photogrammetry backend "
+            f"(requested={backend_id!r}, none available); install COLMAP "
+            "(see docs/spec_photogrammetry.md)"
+        )
+    stats = backend.reconstruct(images_dir, points_out)
+    return dict(stats)
