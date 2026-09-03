@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from ..backends.remesh import available_backends
-from ..core.lod import build_lod
+from ..core.lod import build_lod, build_tri_lod
 from ..core.model import (
     JobManifest,
     PipelineConfig,
@@ -38,6 +38,7 @@ from ..core.model import (
     StageStatus,
 )
 from ..core.pipeline import create_job, run_pipeline
+from ..core.pointcloud import points_to_positions, voxel_downsample
 
 #: Root directory for all service jobs. Configurable via env in real deploys.
 JOBS_ROOT = Path("service_jobs")
@@ -428,3 +429,101 @@ def export_lod(job_id: str, req: ExportLodRequest):
             )
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# Triangle LOD (QEM) endpoints
+# --------------------------------------------------------------------------- #
+
+
+class TriLodRequest(BaseModel):
+    target_faces: int | None = None
+    ratio: float | None = None
+
+
+def _build_tri_lod_sync(job_id: str, target_faces, ratio):
+    manifest = JobManifest.load(_manifest_path(job_id))
+    return build_tri_lod(manifest, target_faces=target_faces, ratio=ratio)
+
+
+@app.post("/jobs/{job_id}/tri-lod")
+def create_tri_lod(job_id: str, req: TriLodRequest) -> dict:
+    """Build (or return cached) a triangle QEM LOD at a target face count."""
+    manifest = _require_manifest(job_id)
+    if not _lod_source_ready(manifest):
+        raise HTTPException(409, "job has no mesh to decimate yet")
+    if req.target_faces is None and req.ratio is None:
+        raise HTTPException(422, "provide target_faces or ratio")
+    result = _executor.submit(
+        _build_tri_lod_sync, job_id, req.target_faces, req.ratio
+    ).result()
+    return {
+        "job_id": job_id,
+        "lod": result.model_dump(),
+        "glb_url": f"/jobs/{job_id}/tri-lod/{result.target_faces}/model.glb",
+    }
+
+
+@app.get("/jobs/{job_id}/tri-lod/{target_faces}/model.glb")
+def get_tri_lod_glb(job_id: str, target_faces: int):
+    from ..core.lod import tri_cache_key
+
+    manifest = _require_manifest(job_id)
+    lod = manifest.tri_lods.get(tri_cache_key(target_faces))
+    if lod is None or not lod.glb:
+        raise HTTPException(404, "tri-LOD not built; POST /jobs/{id}/tri-lod first")
+    path = _job_dir(job_id) / lod.glb
+    if not path.exists():
+        raise HTTPException(404, "tri-LOD glb missing on disk")
+    return FileResponse(str(path), filename="model.glb", media_type="model/gltf-binary")
+
+
+# --------------------------------------------------------------------------- #
+# Point-cloud endpoints
+# --------------------------------------------------------------------------- #
+
+
+class DownsampleRequest(BaseModel):
+    voxel_size: float | None = None
+    target_points: int | None = None
+
+
+def _points_file(job_id: str) -> Path | None:
+    """The original/retained point cloud for a job, if any."""
+    p = _job_dir(job_id) / "00_points.ply"
+    return p if p.exists() else None
+
+
+@app.get("/jobs/{job_id}/pointcloud.json")
+def get_pointcloud_json(job_id: str) -> dict:
+    """Return the original point cloud as flat positions for Three.js Points."""
+    _require_manifest(job_id)
+    pts = _points_file(job_id)
+    if pts is None:
+        raise HTTPException(404, "no point cloud for this job")
+    return {"positions": points_to_positions(pts)}
+
+
+@app.post("/jobs/{job_id}/pointcloud/downsample")
+def downsample_pointcloud(job_id: str, req: DownsampleRequest) -> dict:
+    """Voxel-downsample the job's point cloud; return reduced positions + stats."""
+    _require_manifest(job_id)
+    pts = _points_file(job_id)
+    if pts is None:
+        raise HTTPException(404, "no point cloud for this job")
+    if req.voxel_size is None and req.target_points is None:
+        raise HTTPException(422, "provide voxel_size or target_points")
+
+    out = _job_dir(job_id) / "00_points_downsampled.ply"
+
+    def _work():
+        return voxel_downsample(
+            pts, out, voxel_size=req.voxel_size, target_points=req.target_points
+        )
+
+    stats = _executor.submit(_work).result()
+    return {
+        "job_id": job_id,
+        "stats": stats,
+        "positions": points_to_positions(out),
+    }

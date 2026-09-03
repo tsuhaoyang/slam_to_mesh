@@ -250,3 +250,100 @@ def test_lod_wire_404_before_build(client: TestClient, slam_mesh_path: Path):
     job_id = _create_completed_job(client, slam_mesh_path)
     r = client.get(f"/jobs/{job_id}/lod/9999/wire.json")
     assert r.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Triangle LOD endpoints
+# --------------------------------------------------------------------------- #
+
+
+def test_tri_lod_build_and_glb(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.post(f"/jobs/{job_id}/tri-lod", json={"target_faces": 500})
+    assert r.status_code == 200
+    lod = r.json()["lod"]
+    assert lod["actual_faces"] > 0
+    # QEM hits the exact target.
+    assert lod["actual_faces"] == 500
+    r = client.get(r.json()["glb_url"])
+    assert r.status_code == 200
+    assert len(r.content) > 0
+
+
+def test_tri_lod_requires_target_or_ratio(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.post(f"/jobs/{job_id}/tri-lod", json={})
+    assert r.status_code == 422
+
+
+def test_tri_lod_glb_404_before_build(client: TestClient, slam_mesh_path: Path):
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.get(f"/jobs/{job_id}/tri-lod/9999/model.glb")
+    assert r.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Point-cloud endpoints
+# --------------------------------------------------------------------------- #
+
+
+def _point_cloud_ply(tmp_path: Path) -> Path:
+    import numpy as np
+    import open3d as o3d
+
+    n = 6000
+    rng = np.random.default_rng(0)
+    v = rng.normal(size=(n, 3))
+    v /= np.linalg.norm(v, axis=1, keepdims=True)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(v)
+    pcd.normals = o3d.utility.Vector3dVector(v)
+    p = tmp_path / "cloud.ply"
+    o3d.io.write_point_cloud(str(p), pcd)
+    return p
+
+
+def _create_pointcloud_job(client: TestClient, ply: Path) -> str:
+    r = client.post(
+        "/jobs",
+        files={"file": ("cloud.ply", ply.read_bytes(), "application/octet-stream")},
+        data={"target_faces": "800", "decimate_faces": "3000", "formats": "glb"},
+    )
+    assert r.status_code == 202
+    return r.json()["job_id"]
+
+
+def test_pointcloud_json_and_downsample(client: TestClient, tmp_path: Path):
+    ply = _point_cloud_ply(tmp_path)
+    job_id = _create_pointcloud_job(client, ply)
+
+    # Original points are available.
+    r = client.get(f"/jobs/{job_id}/pointcloud.json")
+    assert r.status_code == 200
+    pos = r.json()["positions"]
+    assert len(pos) % 3 == 0
+    original_count = len(pos) // 3
+    assert original_count > 0
+
+    # Downsample by target points.
+    r = client.post(
+        f"/jobs/{job_id}/pointcloud/downsample", json={"target_points": 800}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stats"]["points_after"] < body["stats"]["points_before"]
+    assert len(body["positions"]) // 3 == body["stats"]["points_after"]
+
+
+def test_pointcloud_downsample_requires_control(client: TestClient, tmp_path: Path):
+    ply = _point_cloud_ply(tmp_path)
+    job_id = _create_pointcloud_job(client, ply)
+    r = client.post(f"/jobs/{job_id}/pointcloud/downsample", json={})
+    assert r.status_code == 422
+
+
+def test_pointcloud_json_404_for_mesh_job(client: TestClient, slam_mesh_path: Path):
+    """A mesh-input job has no retained point cloud."""
+    job_id = _create_completed_job(client, slam_mesh_path)
+    r = client.get(f"/jobs/{job_id}/pointcloud.json")
+    assert r.status_code == 404
