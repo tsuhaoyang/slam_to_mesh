@@ -352,3 +352,26 @@ def test_pointcloud_json_404_for_mesh_job(client: TestClient, slam_mesh_path: Pa
     job_id = _create_completed_job(client, slam_mesh_path)
     r = client.get(f"/jobs/{job_id}/pointcloud.json")
     assert r.status_code == 404
+
+
+def test_pointcloud_generate_for_mesh_job(client: TestClient, slam_mesh_path: Path):
+    """A mesh job can generate a point cloud from its surface (opt-in)."""
+    job_id = _create_completed_job(client, slam_mesh_path)
+    # No point cloud initially.
+    assert client.get(f"/jobs/{job_id}/pointcloud.json").status_code == 404
+
+    r = client.post(f"/jobs/{job_id}/pointcloud/generate", json={"n": 2000})
+    assert r.status_code == 200
+    assert r.json()["stats"]["sampled_points"] > 0
+
+    # Now available + job flips has_pointcloud.
+    assert client.get(f"/jobs/{job_id}/pointcloud.json").status_code == 200
+    assert client.get(f"/jobs/{job_id}").json()["has_pointcloud"] is True
+
+
+def test_pointcloud_download(client: TestClient, tmp_path: Path):
+    ply = _point_cloud_ply(tmp_path)
+    job_id = _create_pointcloud_job(client, ply)
+    r = client.get(f"/jobs/{job_id}/pointcloud/download")
+    assert r.status_code == 200
+    assert len(r.content) > 0

@@ -182,6 +182,7 @@ async function loadJob() {
   }
   applyGating();
   updateSliderLabels();
+  refreshPcTools();
   setStatus("loaded");
   apply();
 }
@@ -282,9 +283,46 @@ async function postJson(url, body) {
   return r.json();
 }
 
+function refreshPcTools() {
+  // Generate offered for mesh jobs without a point cloud; download when present.
+  $("genPts").hidden = state.hasPointcloud || !state.jobId;
+  $("dlPts").hidden = !state.hasPointcloud;
+}
+
+async function generatePoints() {
+  if (!state.jobId) return;
+  setStatus("generating point cloud…");
+  $("genPts").disabled = true;
+  try {
+    const res = await postJson(`/jobs/${state.jobId}/pointcloud/generate`, { n: 20000 });
+    state.hasPointcloud = true;
+    state.pointCount = res.stats.sampled_points;
+    document.querySelector('.show[value="pointcloud"]').checked = true;
+    applyGating();
+    refreshPcTools();
+    setStatus(`generated ${res.stats.sampled_points} points`);
+    apply();
+  } catch {
+    setStatus("generate failed");
+  } finally {
+    $("genPts").disabled = false;
+  }
+}
+
+function downloadPoints() {
+  if (!state.jobId) return;
+  // Downsampled if that pane is active, else the original.
+  const ds = checkedReps().includes("pointcloud_ds");
+  const a = document.createElement("a");
+  a.href = `/jobs/${state.jobId}/pointcloud/download?downsampled=${ds ? 1 : 0}`;
+  a.click();
+}
+
 // ---- wiring ----------------------------------------------------------------
 $("load").addEventListener("click", loadJob);
 $("apply").addEventListener("click", apply);
+$("genPts").addEventListener("click", generatePoints);
+$("dlPts").addEventListener("click", downloadPoints);
 document.querySelectorAll(".show").forEach((cb) =>
   cb.addEventListener("change", () => { applyGating(); }));
 ["triSlider", "quadSlider", "ptsSlider"].forEach((id) => {
@@ -293,3 +331,4 @@ document.querySelectorAll(".show").forEach((cb) =>
 });
 applyGating();
 updateSliderLabels();
+refreshPcTools();

@@ -38,7 +38,11 @@ from ..core.model import (
     StageStatus,
 )
 from ..core.pipeline import create_job, run_pipeline
-from ..core.pointcloud import points_to_positions, voxel_downsample
+from ..core.pointcloud import (
+    points_to_positions,
+    sample_points_from_mesh,
+    voxel_downsample,
+)
 
 #: Root directory for all service jobs. Configurable via env in real deploys.
 JOBS_ROOT = Path("service_jobs")
@@ -530,3 +534,48 @@ def downsample_pointcloud(job_id: str, req: DownsampleRequest) -> dict:
         "stats": stats,
         "positions": points_to_positions(out),
     }
+
+
+class GeneratePointsRequest(BaseModel):
+    n: int = 50000
+
+
+@app.post("/jobs/{job_id}/pointcloud/generate")
+def generate_pointcloud(job_id: str, req: GeneratePointsRequest) -> dict:
+    """Sample a point cloud from a mesh job's surface (opt-in).
+
+    Lets a mesh-input job gain a point-cloud representation for the viewer /
+    downsampling. Writes ``00_points.ply`` and flips ``has_pointcloud``.
+    """
+    manifest = _require_manifest(job_id)
+    # Prefer the ingest (normalized) triangle mesh as the sampling source.
+    src = manifest.artifact_path(Stage.INGEST)
+    if src is None or not src.exists():
+        raise HTTPException(409, "no mesh available to sample from")
+
+    out = _job_dir(job_id) / "00_points.ply"
+
+    def _work():
+        stats = sample_points_from_mesh(src, out, n=req.n)
+        m = JobManifest.load(_manifest_path(job_id))
+        m.has_pointcloud = True
+        m.save()
+        return stats
+
+    stats = _executor.submit(_work).result()
+    return {
+        "job_id": job_id,
+        "stats": stats,
+        "positions": points_to_positions(out),
+    }
+
+
+@app.get("/jobs/{job_id}/pointcloud/download")
+def download_pointcloud(job_id: str, downsampled: bool = False):
+    """Download the point cloud as a PLY (original or downsampled)."""
+    _require_manifest(job_id)
+    name = "00_points_downsampled.ply" if downsampled else "00_points.ply"
+    path = _job_dir(job_id) / name
+    if not path.exists():
+        raise HTTPException(404, "point cloud not available")
+    return FileResponse(str(path), filename=name, media_type="application/octet-stream")
