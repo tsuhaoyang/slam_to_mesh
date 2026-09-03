@@ -134,13 +134,17 @@ Spec: `docs/spec_flexible_io.md`.
 - Verified via Playwright (mesh → 3 synced panes; point cloud → downsample compare
   with correct gating). 80 tests pass.
 
-### 2D image → 3D (TripoSR) — **INTEGRATED**
-Image input is a first-class input type. Ingest detects `.png/.jpg/.jpeg/.webp`,
-calls TripoSR out of process (isolated venv, via `core/image_to_mesh.py`) to
-generate a mesh, then the normal pipeline runs; `input_kind = "image"`. Gated by
-availability like the QuadriFlow binary — if TripoSR isn't installed the service
-returns 503 for image uploads and `GET /capabilities` reports `image_input:
-false`. Verified end-to-end (chair.png → 84k-face mesh → 3,008-face quad).
+### 2D image → 3D (TripoSR) — **INTEGRATED (pluggable backend)**
+Image input is a first-class input type. Single-image 3D is a **swappable backend
+registry** (`backends/image3d.py`, mirroring the remesh registry): **TripoSR** is
+the built-in impl (`backends/image3d_triposr.py`, isolated venv via subprocess).
+Ingest detects `.png/.jpg/.jpeg/.webp`, picks the configured
+`PipelineConfig.image_backend` (default `triposr`; `None` = first available),
+generates a mesh, then the normal pipeline runs; `input_kind = "image"`. Gated by
+availability — image uploads return 503 when no backend is available, and
+`GET /capabilities` reports `image_backends`. A stronger model such as **TRELLIS**
+(Microsoft, MIT) can be added as another backend on a bigger-VRAM server and
+selected via `image_backend` (form field / config) without touching the pipeline.
 
 TripoSR is MIT-licensed (VAST-AI-Research; Tripo AI + Stability AI), incl.
 weights, and runs in its own venv. Two obstacles solved: (1) needs PyTorch

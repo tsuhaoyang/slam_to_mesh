@@ -133,10 +133,13 @@ clouds** (`.ply` points / `.pcd` / `.xyz`), and **2D images**
 (`.png/.jpg/.webp`). Point clouds are reconstructed to a triangle mesh (Open3D
 Poisson) at ingest so the surface pipeline can run; the original points are
 retained for the point-cloud viewer and downsampling. Images are turned into a
-3D mesh with **TripoSR** (single-image reconstruction) at ingest, then the normal
-pipeline runs. TripoSR runs in its own isolated venv and is called out of
-process; if it is not installed the image input is simply unavailable (see
-`GET /capabilities` and `docs/triposr_2d_to_3d.md`).
+3D mesh at ingest via a **pluggable single-image backend**
+(`slam_to_mesh.backends.image3d`) — **TripoSR** is the built-in implementation
+(isolated venv, called out of process); a stronger model such as **TRELLIS**
+(MIT) can be registered as another backend on a bigger-VRAM server and selected
+via `image_backend` without touching the pipeline. If no image backend is
+installed the image input is simply unavailable (see `GET /capabilities` and
+`docs/triposr_2d_to_3d.md`).
 
 The service and CLI share the same pipeline core (`slam_to_mesh.core.pipeline`)
 and on-disk job manifest, so jobs are inspectable and resumable either way.
