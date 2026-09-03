@@ -318,7 +318,42 @@ function downloadPoints() {
   a.click();
 }
 
+async function uploadJob() {
+  const f = $("file").files[0];
+  if (!f) { $("upNote").textContent = "choose a file first"; return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("target_faces", String(parseInt($("upTarget").value, 10) || 8000));
+  fd.append("backend", "quadriflow");
+  fd.append("formats", "glb,obj");
+
+  $("upload").disabled = true;
+  $("upNote").textContent = "uploading…";
+  try {
+    const r = await fetch("/jobs", { method: "POST", body: fd });
+    if (r.status === 503) { $("upNote").textContent = "image input unavailable (TripoSR not installed)"; return; }
+    if (r.status === 400) { $("upNote").textContent = "unsupported file format"; return; }
+    if (!r.ok) { $("upNote").textContent = `upload failed (${r.status})`; return; }
+    const { job_id } = await r.json();
+    $("job").value = job_id;
+    // Poll until the pipeline completes.
+    for (let i = 0; i < 120; i++) {
+      await new Promise((res) => setTimeout(res, 2000));
+      const s = await (await fetch(`/jobs/${job_id}`)).json();
+      $("upNote").textContent = `processing… (${s.status})`;
+      if (s.status === "completed") { $("upNote").textContent = `done: ${job_id}`; loadJob(); return; }
+      if (s.status === "failed") { $("upNote").textContent = "processing failed"; return; }
+    }
+    $("upNote").textContent = "still processing — load manually later";
+  } catch {
+    $("upNote").textContent = "upload error";
+  } finally {
+    $("upload").disabled = false;
+  }
+}
+
 // ---- wiring ----------------------------------------------------------------
+$("upload").addEventListener("click", uploadJob);
 $("load").addEventListener("click", loadJob);
 $("apply").addEventListener("click", apply);
 $("genPts").addEventListener("click", generatePoints);

@@ -27,6 +27,17 @@
 
     <aside id="panel">
       <div class="row">
+        <label class="section">New job</label>
+        <input id="file" type="file"
+               accept=".ply,.obj,.stl,.off,.glb,.pcd,.xyz,.png,.jpg,.jpeg,.webp" />
+        <label class="mini">Target faces
+          <input id="upTarget" type="number" value="8000" min="500" step="500" />
+        </label>
+        <button id="upload">Upload &amp; process</button>
+        <p id="upNote" class="note"></p>
+      </div>
+
+      <div class="row">
         <label for="job">Job ID</label>
         <input id="job" type="text" placeholder="paste job_id" />
         <button id="load">Load</button>
