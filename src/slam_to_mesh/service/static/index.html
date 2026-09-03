@@ -3,9 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>slam_to_mesh — interactive decimation</title>
+  <title>slam_to_mesh — viewer</title>
   <link rel="stylesheet" href="style.css" />
-  <!-- Three.js + loaders/controls via import map (ES modules, CDN). -->
   <script type="importmap">
   {
     "imports": {
@@ -17,22 +16,14 @@
 </head>
 <body>
   <header>
-    <h1>Interactive Quad Decimation</h1>
-    <p class="sub">Drag the slider to reduce faces. Every level is regular
-      quad-dominant (re-remeshed with QuadriFlow), so it stays export-ready.</p>
+    <h1>slam_to_mesh — multi-view</h1>
+    <p class="sub">Pick representations to display; each opens its own synced
+      viewer. Meshes decimate by re-remesh (quad) or QEM (triangle); point clouds
+      downsample by voxel. All independent.</p>
   </header>
 
   <div id="app">
-    <div id="viewers">
-      <div class="viewpane">
-        <div class="viewlabel">Surface <span id="srcFaces" class="badge"></span></div>
-        <div id="viewerSrc" class="viewer"></div>
-      </div>
-      <div class="viewpane">
-        <div class="viewlabel">Quad wireframe <span id="lodFaces" class="badge"></span></div>
-        <div id="viewerLod" class="viewer"></div>
-      </div>
-    </div>
+    <div id="panes"></div>
 
     <aside id="panel">
       <div class="row">
@@ -42,36 +33,37 @@
       </div>
 
       <div class="row">
-        <label for="slider">Target faces: <span id="pct">50%</span> of input
-          (<span id="targetFaces">—</span>)</label>
-        <input id="slider" type="range" min="5" max="100" value="50" step="1" />
+        <label class="section">Show</label>
+        <label><input type="checkbox" class="show" value="triangle" /> Triangle mesh</label>
+        <label><input type="checkbox" class="show" value="triangle_dec" /> Triangle — decimated</label>
+        <label><input type="checkbox" class="show" value="quad" checked /> Quad mesh</label>
+        <label><input type="checkbox" class="show" value="quad_dec" /> Quad — decimated</label>
+        <label><input type="checkbox" class="show" value="pointcloud" /> Point cloud</label>
+        <label><input type="checkbox" class="show" value="pointcloud_ds" /> Point cloud — downsample</label>
+        <p id="gateNote" class="note"></p>
       </div>
 
-      <div class="row toggle">
-        <label><input id="bake" type="checkbox" /> Bake color + normal (preview textures)</label>
+      <div class="row slider-group" id="grpTri" hidden>
+        <label>Triangle target: <span id="triPct">30%</span>
+          (<span id="triFaces">—</span>)</label>
+        <input id="triSlider" type="range" min="1" max="100" value="30" />
+      </div>
+
+      <div class="row slider-group" id="grpQuad" hidden>
+        <label>Quad target: <span id="quadPct">30%</span>
+          (<span id="quadFaces">—</span>)</label>
+        <input id="quadSlider" type="range" min="1" max="100" value="30" />
+      </div>
+
+      <div class="row slider-group" id="grpPts" hidden>
+        <label>Point target: <span id="ptsPct">30%</span>
+          (<span id="ptsCount">—</span>)</label>
+        <input id="ptsSlider" type="range" min="1" max="100" value="30" />
       </div>
 
       <div class="row">
         <button id="apply">Apply</button>
         <span id="status"></span>
-      </div>
-
-      <div id="metrics" class="metrics">
-        <h3>Metrics</h3>
-        <table>
-          <tr><td>Actual faces</td><td id="mFaces">—</td></tr>
-          <tr><td>Quad ratio</td><td id="mQuad">—</td></tr>
-          <tr><td>Mean surface error</td><td id="mErr">—</td></tr>
-          <tr><td>Hausdorff</td><td id="mHaus">—</td></tr>
-        </table>
-      </div>
-
-      <div class="row export">
-        <h3>Export chosen LOD</h3>
-        <label><input type="checkbox" class="fmt" value="glb" checked /> glTF (.glb)</label>
-        <label><input type="checkbox" class="fmt" value="usd" checked /> USD (.usd)</label>
-        <label><input type="checkbox" class="fmt" value="obj" /> OBJ (.obj)</label>
-        <button id="export">Export &amp; Download</button>
       </div>
     </aside>
   </div>

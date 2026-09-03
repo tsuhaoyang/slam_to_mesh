@@ -1,7 +1,7 @@
-// Interactive quad decimation UI.
-// The SAME decimated LOD is shown two ways, updated together when the slider
-// changes: left = shaded surface, right = real quad wireframe (polygon edges
-// from the backend, not triangle diagonals). See docs/spec_interactive_decimation.md.
+// slam_to_mesh multi-view UI.
+// Checkboxes choose which representations to show; each gets its own synced
+// viewer pane. Mesh reps decimate (quad = re-remesh, triangle = QEM); point
+// clouds downsample (voxel). All independent. See docs/spec_flexible_io.md.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -10,26 +10,33 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 const $ = (id) => document.getElementById(id);
 const loader = new GLTFLoader();
 
+// ---- representation registry ----------------------------------------------
+// kind: how to render (surface | wireframe | points); mesh: is it a mesh rep.
+const REPS = {
+  triangle:      { label: "Triangle mesh",        kind: "surface",   mesh: true },
+  triangle_dec:  { label: "Triangle — decimated",  kind: "surface",   mesh: true },
+  quad:          { label: "Quad mesh",             kind: "wireframe", mesh: true },
+  quad_dec:      { label: "Quad — decimated",      kind: "wireframe", mesh: true },
+  pointcloud:    { label: "Point cloud",           kind: "points",    mesh: false },
+  pointcloud_ds: { label: "Point cloud — downsample", kind: "points", mesh: false },
+};
+
+// ---- viewer factory --------------------------------------------------------
 function makeViewer(el) {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   el.appendChild(renderer.domElement);
-
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x2a2a2e);
-
-  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 5000);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.001, 100000);
   camera.position.set(0, 0, 3);
-
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
-
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.0));
   const dir = new THREE.DirectionalLight(0xffffff, 1.2);
   dir.position.set(1, 2, 3);
   scene.add(dir);
-
-  let content = null; // current object group
+  let content = null;
 
   function resize() {
     const w = el.clientWidth, h = el.clientHeight;
@@ -38,195 +45,251 @@ function makeViewer(el) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }
-
   function frame(obj) {
     const box = new THREE.Box3().setFromObject(obj);
     const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    obj.position.sub(center);
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    camera.position.set(0, 0, maxDim * 2.2);
-    camera.near = maxDim / 100;
-    camera.far = maxDim * 100;
+    const c = box.getCenter(new THREE.Vector3());
+    obj.position.sub(c);
+    const d = Math.max(size.x, size.y, size.z) || 1;
+    camera.position.set(0, 0, d * 2.2);
+    camera.near = d / 100; camera.far = d * 100;
     camera.updateProjectionMatrix();
-    controls.target.set(0, 0, 0);
-    controls.update();
-    return maxDim;
+    controls.target.set(0, 0, 0); controls.update();
   }
-
   function clear() {
     if (content) {
       scene.remove(content);
-      content.traverse?.((o) => {
-        if (o.geometry) o.geometry.dispose();
-        if (o.material) o.material.dispose?.();
-      });
+      content.traverse?.((o) => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
       content = null;
     }
   }
-
-  function setObject(obj, doFrame = true) {
-    clear();
-    content = obj;
-    scene.add(obj);
-    if (doFrame) frame(obj);
-  }
-
+  function setObject(obj) { clear(); content = obj; scene.add(obj); frame(obj); }
   function render() { controls.update(); renderer.render(scene, camera); }
-
   window.addEventListener("resize", resize);
-  resize();
-  return { scene, camera, controls, resize, render, frame, setObject };
+  return { el, scene, camera, controls, resize, render, setObject };
 }
 
-const left = makeViewer($("viewerSrc"));   // shaded surface
-const right = makeViewer($("viewerLod"));  // quad wireframe
+// ---- pane management -------------------------------------------------------
+let panes = {}; // rep -> {viewer, labelEl, badgeEl}
+let rafStarted = false;
 
-// Keep the two cameras in sync: dragging one rotates both.
-let syncing = false;
-function sync(from, to) {
-  if (syncing) return;
-  syncing = true;
-  to.camera.position.copy(from.camera.position);
-  to.camera.quaternion.copy(from.camera.quaternion);
-  to.controls.target.copy(from.controls.target);
-  to.camera.updateProjectionMatrix();
-  syncing = false;
+function rebuildPanes(reps) {
+  // Dispose old panes.
+  $("panes").innerHTML = "";
+  panes = {};
+  const container = $("panes");
+  container.classList.toggle("rows-2", reps.length > 2);
+
+  for (const rep of reps) {
+    const pane = document.createElement("div");
+    pane.className = "viewpane";
+    const label = document.createElement("div");
+    label.className = "viewlabel";
+    label.textContent = REPS[rep].label;
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    label.appendChild(badge);
+    const view = document.createElement("div");
+    view.className = "viewer";
+    pane.appendChild(label); pane.appendChild(view);
+    container.appendChild(pane);
+    panes[rep] = { viewer: makeViewer(view), badgeEl: badge };
+  }
+  // Resize after layout settles, then sync cameras among mesh panes.
+  setTimeout(() => Object.values(panes).forEach((p) => p.viewer.resize()), 0);
+  wireCameraSync();
+  if (!rafStarted) { rafStarted = true; animate(); }
 }
-left.controls.addEventListener("change", () => sync(left, right));
-right.controls.addEventListener("change", () => sync(right, left));
 
 function animate() {
   requestAnimationFrame(animate);
-  left.render();
-  right.render();
+  for (const p of Object.values(panes)) p.viewer.render();
 }
-animate();
-setTimeout(() => { left.resize(); right.resize(); }, 0);
 
-// --- API glue ---------------------------------------------------------------
-let jobId = null;
-let inputFaces = null;
+// Sync cameras across all currently-shown panes (drag one → all move).
+let syncing = false;
+function wireCameraSync() {
+  const list = Object.values(panes).map((p) => p.viewer);
+  for (const v of list) {
+    v.controls.addEventListener("change", () => {
+      if (syncing) return;
+      syncing = true;
+      for (const o of list) {
+        if (o === v) continue;
+        o.camera.position.copy(v.camera.position);
+        o.camera.quaternion.copy(v.camera.quaternion);
+        o.controls.target.copy(v.controls.target);
+        o.camera.updateProjectionMatrix();
+      }
+      syncing = false;
+    });
+  }
+}
+
+// ---- gating (Q1) -----------------------------------------------------------
+function checkedReps() {
+  return [...document.querySelectorAll(".show:checked")].map((c) => c.value);
+}
+
+function applyGating() {
+  const checked = checkedReps();
+  const meshChecked = checked.some((r) => REPS[r].mesh);
+  const dsChecked = checked.includes("pointcloud_ds");
+  const pcOnly = checked.length === 1 && checked[0] === "pointcloud";
+  const hasPC = state.hasPointcloud;
+
+  document.querySelectorAll(".show").forEach((cb) => {
+    const v = cb.value;
+    if (v === "pointcloud_ds") {
+      // Enabled only when point cloud is the sole selection (or already on).
+      cb.disabled = !hasPC || (!pcOnly && !cb.checked);
+    } else if (REPS[v].mesh) {
+      // Mesh reps disabled while downsample mode is active.
+      cb.disabled = dsChecked;
+    } else if (v === "pointcloud") {
+      cb.disabled = !hasPC;
+    }
+  });
+
+  let note = "";
+  if (!hasPC) note = "This job has no point cloud (mesh input).";
+  else if (dsChecked) note = "Point-cloud downsample mode: mesh views disabled.";
+  else if (meshChecked) note = "‘Point cloud — downsample’ needs point cloud alone.";
+  $("gateNote").textContent = note;
+
+  // Contextual sliders.
+  $("grpTri").hidden = !checked.includes("triangle_dec");
+  $("grpQuad").hidden = !checked.includes("quad_dec");
+  $("grpPts").hidden = !checked.includes("pointcloud_ds");
+}
+
+// ---- state -----------------------------------------------------------------
+const state = { jobId: null, inputFaces: null, hasPointcloud: false, pointCount: null };
 const setStatus = (m) => { $("status").textContent = m || ""; };
 
 async function loadJob() {
-  jobId = $("job").value.trim();
-  if (!jobId) { setStatus("enter a job id"); return; }
+  state.jobId = $("job").value.trim();
+  if (!state.jobId) { setStatus("enter a job id"); return; }
   setStatus("loading job…");
-  const r = await fetch(`/jobs/${jobId}`);
+  const r = await fetch(`/jobs/${state.jobId}`);
   if (!r.ok) { setStatus("job not found"); return; }
   const info = await r.json();
-  inputFaces = info.stages?.ingest?.metrics?.faces ?? null;
-  updateTargetLabel();
-  setStatus("job loaded — pick a level");
-  applyLod();
+  state.inputFaces = info.input_faces ?? info.stages?.ingest?.metrics?.faces ?? null;
+  state.hasPointcloud = !!info.has_pointcloud;
+  // If it's a point cloud job, default to showing the point cloud.
+  if (state.hasPointcloud) {
+    document.querySelector('.show[value="pointcloud"]').checked = true;
+  }
+  applyGating();
+  updateSliderLabels();
+  setStatus("loaded");
+  apply();
 }
 
-function currentTargetFaces() {
-  const pct = parseInt($("slider").value, 10);
-  if (inputFaces) return Math.max(200, Math.round((inputFaces * pct) / 100));
-  return null;
+// ---- loaders per representation --------------------------------------------
+function loadGlbInto(viewer, url) {
+  return new Promise((res, rej) =>
+    loader.load(url, (g) => { viewer.setObject(g.scene); res(); }, undefined, rej));
 }
-
-function updateTargetLabel() {
-  const pct = parseInt($("slider").value, 10);
-  $("pct").textContent = `${pct}%`;
-  const tf = currentTargetFaces();
-  $("targetFaces").textContent = tf ? `${tf} faces` : "—";
-}
-
-// Load the shaded glb into the left viewer.
-function loadShaded(url) {
-  return new Promise((resolve, reject) => {
-    loader.load(url, (gltf) => { left.setObject(gltf.scene); resolve(); }, undefined, reject);
-  });
-}
-
-// Build a quad-wireframe object from the backend's positions+edges and show it
-// in the right viewer. Reuses the left camera framing so both align.
-async function loadWire(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error("wire fetch failed");
+async function loadWireInto(viewer, url) {
+  const r = await fetch(url); if (!r.ok) throw new Error("wire");
   const { positions, edges } = await r.json();
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geo.setIndex(edges);
-  const mat = new THREE.LineBasicMaterial({ color: 0x8fd6a8 });
-  const lines = new THREE.LineSegments(geo, mat);
-  right.setObject(lines);
+  viewer.setObject(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x8fd6a8 })));
+}
+async function loadPointsInto(viewer, url, body) {
+  const r = body
+    ? await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    : await fetch(url);
+  if (!r.ok) throw new Error("points");
+  const data = await r.json();
+  const positions = data.positions;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({ color: 0x8fb3ff, size: 0.01, sizeAttenuation: true });
+  viewer.setObject(new THREE.Points(geo, mat));
+  return positions.length / 3;
 }
 
-async function applyLod() {
-  if (!jobId) { setStatus("load a job first"); return; }
-  const pct = parseInt($("slider").value, 10);
-  const bake = $("bake").checked;
-  const body = inputFaces
-    ? { target_faces: currentTargetFaces(), bake }
-    : { ratio: pct / 100, bake };
+// ---- slider helpers --------------------------------------------------------
+function pctToFaces(pct) {
+  return state.inputFaces ? Math.max(200, Math.round(state.inputFaces * pct / 100)) : null;
+}
+function updateSliderLabels() {
+  const tf = pctToFaces(+$("triSlider").value);
+  $("triPct").textContent = `${$("triSlider").value}%`;
+  $("triFaces").textContent = tf ? `${tf} faces` : "—";
+  const qf = pctToFaces(+$("quadSlider").value);
+  $("quadPct").textContent = `${$("quadSlider").value}%`;
+  $("quadFaces").textContent = qf ? `${qf} faces` : "—";
+  $("ptsPct").textContent = `${$("ptsSlider").value}%`;
+  const pc = state.pointCount ? Math.max(1, Math.round(state.pointCount * $("ptsSlider").value / 100)) : null;
+  $("ptsCount").textContent = pc ? `${pc} pts` : "—";
+}
 
-  setStatus("building LOD…");
+// ---- apply: build the panes for the current selection ----------------------
+async function apply() {
+  if (!state.jobId) { setStatus("load a job first"); return; }
+  const reps = checkedReps();
+  if (reps.length === 0) { setStatus("pick something to show"); rebuildPanes([]); return; }
+  rebuildPanes(reps);
+  setStatus("building…");
   $("apply").disabled = true;
+  const jid = state.jobId;
   try {
-    const r = await fetch(`/jobs/${jobId}/lod`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) { setStatus(`error ${r.status}`); return; }
-    const data = await r.json();
-    const lod = data.lod;
-    updateMetrics(lod);
-    $("srcFaces").textContent = `${lod.actual_faces} faces`;
-    $("lodFaces").textContent = `${lod.actual_faces} faces`;
-
-    const base = `/jobs/${jobId}/lod/${lod.target_faces}`;
-    const q = lod.baked ? "?baked=1" : "";
-    await Promise.all([
-      loadShaded(`${base}/model.glb${q}`),
-      loadWire(`${base}/wire.json${q}`),
-    ]);
-    sync(left, right); // align cameras after both load
+    for (const rep of reps) {
+      const { viewer, badgeEl } = panes[rep];
+      if (rep === "triangle") {
+        await loadGlbInto(viewer, `/jobs/${jid}/source.glb`);
+        badgeEl.textContent = state.inputFaces ? `${state.inputFaces} faces` : "";
+      } else if (rep === "triangle_dec") {
+        const tf = pctToFaces(+$("triSlider").value);
+        const res = await postJson(`/jobs/${jid}/tri-lod`, { target_faces: tf });
+        await loadGlbInto(viewer, res.glb_url);
+        badgeEl.textContent = `${res.lod.actual_faces} faces`;
+      } else if (rep === "quad" || rep === "quad_dec") {
+        const pct = rep === "quad_dec" ? +$("quadSlider").value : 100;
+        const tf = pctToFaces(pct);
+        const res = await postJson(`/jobs/${jid}/lod`, { target_faces: tf });
+        const base = `/jobs/${jid}/lod/${res.lod.target_faces}`;
+        await loadWireInto(viewer, `${base}/wire.json`);
+        badgeEl.textContent = `${res.lod.actual_faces} faces`;
+      } else if (rep === "pointcloud") {
+        const n = await loadPointsInto(viewer, `/jobs/${jid}/pointcloud.json`);
+        state.pointCount = n;
+        badgeEl.textContent = `${n} pts`;
+      } else if (rep === "pointcloud_ds") {
+        const pct = +$("ptsSlider").value;
+        const target = state.pointCount ? Math.max(1, Math.round(state.pointCount * pct / 100)) : 2000;
+        const n = await loadPointsInto(viewer, `/jobs/${jid}/pointcloud/downsample`, { target_points: target });
+        badgeEl.textContent = `${n} pts`;
+      }
+    }
+    updateSliderLabels();
     setStatus("done");
-  } catch {
-    setStatus("request failed");
+  } catch (e) {
+    setStatus("build failed");
   } finally {
     $("apply").disabled = false;
   }
 }
 
-function updateMetrics(l) {
-  $("mFaces").textContent = l.actual_faces;
-  $("mQuad").textContent = `${(l.quad_ratio * 100).toFixed(0)}%`;
-  $("mErr").textContent = `${l.mean_dist_pct_bbox.toFixed(3)}% bbox`;
-  $("mHaus").textContent = `${l.hausdorff_pct_bbox.toFixed(2)}% bbox`;
+async function postJson(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${url} ${r.status}`);
+  return r.json();
 }
 
-async function exportLod() {
-  if (!jobId) { setStatus("load a job first"); return; }
-  const formats = [...document.querySelectorAll(".fmt:checked")].map((c) => c.value);
-  if (formats.length === 0) { setStatus("pick a format"); return; }
-  const body = inputFaces
-    ? { target_faces: currentTargetFaces(), bake: $("bake").checked, formats }
-    : { ratio: parseInt($("slider").value, 10) / 100, bake: $("bake").checked, formats };
-  setStatus("exporting…");
-  const r = await fetch(`/jobs/${jobId}/export-lod`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) { setStatus(`export error ${r.status}`); return; }
-  const blob = await r.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = `${jobId}_lod.zip`; a.click();
-  URL.revokeObjectURL(url);
-  setStatus("exported");
-}
-
+// ---- wiring ----------------------------------------------------------------
 $("load").addEventListener("click", loadJob);
-$("slider").addEventListener("input", updateTargetLabel);
-$("slider").addEventListener("change", applyLod);
-$("apply").addEventListener("click", applyLod);
-$("bake").addEventListener("change", applyLod);
-$("export").addEventListener("click", exportLod);
-updateTargetLabel();
+$("apply").addEventListener("click", apply);
+document.querySelectorAll(".show").forEach((cb) =>
+  cb.addEventListener("change", () => { applyGating(); }));
+["triSlider", "quadSlider", "ptsSlider"].forEach((id) => {
+  $(id).addEventListener("input", updateSliderLabels);
+  $(id).addEventListener("change", apply);
+});
+applyGating();
+updateSliderLabels();

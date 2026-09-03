@@ -182,6 +182,9 @@ def get_job(job_id: str) -> dict:
     return {
         "job_id": job_id,
         "status": _overall_status(manifest),
+        "input_kind": manifest.input_kind,
+        "has_pointcloud": manifest.has_pointcloud,
+        "input_faces": manifest.input_stats.faces if manifest.input_stats else None,
         "stages": stages,
     }
 

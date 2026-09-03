@@ -210,7 +210,7 @@ def test_export_lod_zip(client: TestClient, slam_mesh_path: Path):
 def test_ui_served(client: TestClient):
     r = client.get("/ui/")
     assert r.status_code == 200
-    assert "Interactive Quad Decimation" in r.text
+    assert "multi-view" in r.text
     r = client.get("/ui/app.js")
     assert r.status_code == 200
 
@@ -220,8 +220,13 @@ def test_get_job_exposes_ingest_faces_for_ui(client: TestClient, slam_mesh_path:
     job_id = _create_completed_job(client, slam_mesh_path)
     r = client.get(f"/jobs/{job_id}")
     assert r.status_code == 200
-    ingest = r.json()["stages"]["ingest"]
+    body = r.json()
+    ingest = body["stages"]["ingest"]
     assert ingest["metrics"].get("faces", 0) > 0
+    # Frontend gating fields.
+    assert body["input_kind"] == "mesh"
+    assert body["has_pointcloud"] is False
+    assert body["input_faces"] > 0
 
 
 def test_source_glb_served(client: TestClient, slam_mesh_path: Path):
