@@ -159,6 +159,9 @@ class PipelineConfig(BaseModel):
     unwrap: UnwrapConfig = Field(default_factory=UnwrapConfig)
     bake: BakeConfig = Field(default_factory=BakeConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+    #: Single-image → 3D backend id (e.g. "triposr"; "trellis" later). None =
+    #: auto-pick the first available image3d backend.
+    image_backend: str | None = "triposr"
 
 
 # --------------------------------------------------------------------------- #

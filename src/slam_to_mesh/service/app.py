@@ -87,11 +87,13 @@ def backends() -> dict:
 @app.get("/capabilities")
 def capabilities() -> dict:
     """Feature availability for the UI (e.g. whether image input is possible)."""
+    from ..backends.image3d import available_backends as image_backends
     from ..core.image_to_mesh import IMAGE_EXTS
-    from ..core.image_to_mesh import is_available as triposr_available
 
+    img_backends = image_backends()
     return {
-        "image_input": triposr_available(),
+        "image_input": bool(img_backends),
+        "image_backends": img_backends,
         "image_exts": sorted(IMAGE_EXTS),
         "backends": available_backends(),
     }
@@ -106,17 +108,20 @@ async def create_and_run_job(
     bake: bool = Form(False),
     formats: str = Form("glb,obj"),
     project: bool = Form(True),
+    image_backend: Optional[str] = Form(None),
 ) -> dict:
     """Accept a mesh / point-cloud / image upload, create a job, and process."""
     suffix = (Path(file.filename or "input.ply").suffix or ".ply").lower()
     mesh_exts = {".ply", ".obj", ".stl", ".off", ".glb"}
     pointcloud_exts = {".pcd", ".xyz", ".xyzn", ".pts"}
-    from ..core.image_to_mesh import IMAGE_EXTS, is_available as triposr_available
+    from ..core.image_to_mesh import IMAGE_EXTS, is_available as image3d_available
 
     if suffix in IMAGE_EXTS:
-        if not triposr_available():
+        if not image3d_available(image_backend):
             raise HTTPException(
-                503, "image input needs TripoSR, which is not available on this server"
+                503,
+                "image input needs an image-to-3D backend "
+                f"(requested={image_backend or 'any'}), which is not available",
             )
     elif suffix not in mesh_exts | pointcloud_exts:
         raise HTTPException(400, f"Unsupported input format: {suffix}")
@@ -139,6 +144,8 @@ async def create_and_run_job(
     config.bake.enabled = bake
     config.project.enabled = project
     config.export.formats = [f.strip() for f in formats.split(",") if f.strip()]
+    if image_backend:
+        config.image_backend = image_backend
 
     create_job(input_path, jd, config=config, job_id=job_id)
 

@@ -31,18 +31,20 @@ def run(ctx: StageContext) -> StageResult:
         recon_stats = None
         image_src = None
         if is_image_file(src):
-            # Image input: generate a 3D mesh with TripoSR (isolated venv,
-            # subprocess), then treat that mesh as the ingest source.
-            if not is_available():
+            # Image input: generate a 3D mesh with the configured image3d
+            # backend (isolated venv, subprocess), then treat it as the source.
+            backend_id = ctx.manifest.config.image_backend
+            if not is_available(backend_id):
                 raise RuntimeError(
-                    "image input requires TripoSR (not available); see "
+                    "image input requires an image-to-3D backend "
+                    f"(requested={backend_id!r}, none available); see "
                     "docs/triposr_2d_to_3d.md"
                 )
             ctx.manifest.input_kind = "image"
             image_src = src
             gen_mesh = ctx.job_dir / "00_generated.obj"
             gen_mesh.parent.mkdir(parents=True, exist_ok=True)
-            generate_mesh(src, gen_mesh)
+            gen_stats = generate_mesh(src, gen_mesh, backend_id=backend_id)
             mesh = load_mesh(gen_mesh)
         elif is_point_cloud_file(src):
             # Point-cloud input: retain the original points, then reconstruct a
@@ -81,6 +83,7 @@ def run(ctx: StageContext) -> StageResult:
             result.metrics["reconstructed_from_points"] = recon_stats["input_points"]
         if image_src is not None:
             result.metrics["generated_from_image"] = str(image_src)
+            result.metrics["image_backend"] = gen_stats.get("backend")
 
         # Human-readable problem summary.
         problems = []
