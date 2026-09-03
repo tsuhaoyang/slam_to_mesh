@@ -141,6 +141,17 @@ via `image_backend` without touching the pipeline. If no image backend is
 installed the image input is simply unavailable (see `GET /capabilities` and
 `docs/triposr_2d_to_3d.md`).
 
+For **rigid, straight-edged objects** (where single-image generation distorts),
+the service also accepts **multi-view input**: a **`.zip` of photos** (10–50,
+taken around the object) or a **video** (`.mp4/.mov/.mkv/.webm`; frames are
+sampled — set the count with the `frames` field). These go through
+**photogrammetry** (Structure-from-Motion + MVS via a pluggable
+`slam_to_mesh.backends.photogrammetry` backend, **COLMAP** built-in) to produce a
+dense point cloud, which then flows into the normal point-cloud path. This
+*measures* geometry (straight edges stay straight) rather than guessing, at the
+cost of minutes of compute. Requires COLMAP; unavailable otherwise
+(see `docs/spec_photogrammetry.md`).
+
 The service and CLI share the same pipeline core (`slam_to_mesh.core.pipeline`)
 and on-disk job manifest, so jobs are inspectable and resumable either way.
 

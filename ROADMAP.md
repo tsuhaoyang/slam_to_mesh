@@ -157,3 +157,27 @@ nightly + CUDA 13, so its single marching-cubes call was replaced with
 - Re-remeshing at high face targets is slow (QuadriFlow ~1–2 s small, tens of
   seconds for very dense targets); the UI is snappy at low percentages. A
   precomputed LOD ladder would remove the wait (future optimization).
+
+## Feature: Multi-view photogrammetry input (images / video) — **CODE DONE, real e2e pending COLMAP**
+
+Spec: `docs/spec_photogrammetry.md`. Measurement-based 3D for rigid,
+straight-edged objects that single-image generation distorts.
+
+- Inputs: a **`.zip` of photos** (`input_kind="images"`) or a **video**
+  (`input_kind="video"`; frames sampled via `core/frames.py`, ffmpeg).
+- **Photogrammetry backend registry** (`backends/photogrammetry.py`), first impl
+  **COLMAP** (`backends/photogrammetry_colmap.py`, `automatic_reconstructor
+  --dense` → fused dense point cloud), availability-gated like QuadriFlow.
+- Ingest routes zip/video → dense point cloud (`00_points.ply`) → **reuses the
+  existing point-cloud path** (Poisson → clean → QuadriFlow → …). So downstream
+  is entirely shared.
+- Config: `photogrammetry_backend` (default `colmap`), `video_frames` (40).
+- Service: `.zip`/video uploads gated on availability (503 otherwise), `frames`
+  form field, `/capabilities` reports `photogrammetry` + backends + `video_exts`.
+- Frontend: upload accepts `.zip`/video, frames field, "takes several minutes" note.
+- Tests: frames extraction, registry availability/graceful-absent, ingest
+  zip→photogrammetry routing. All pass with COLMAP absent (99 passed, 2 skipped).
+
+**Pending**: install COLMAP (`sudo apt install colmap`, or a CUDA build for GPU
+MVS) and run a real end-to-end on an actual photo set / video. Everything else is
+implemented and unit-verified.
