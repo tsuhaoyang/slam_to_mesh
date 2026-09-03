@@ -88,13 +88,19 @@ def backends() -> dict:
 def capabilities() -> dict:
     """Feature availability for the UI (e.g. whether image input is possible)."""
     from ..backends.image3d import available_backends as image_backends
+    from ..backends.photogrammetry import available_backends as photo_backends
+    from ..core.frames import VIDEO_EXTS
     from ..core.image_to_mesh import IMAGE_EXTS
 
     img_backends = image_backends()
+    photogrammetry = photo_backends()
     return {
         "image_input": bool(img_backends),
         "image_backends": img_backends,
         "image_exts": sorted(IMAGE_EXTS),
+        "photogrammetry": bool(photogrammetry),
+        "photogrammetry_backends": photogrammetry,
+        "video_exts": sorted(VIDEO_EXTS),
         "backends": available_backends(),
     }
 
@@ -109,12 +115,16 @@ async def create_and_run_job(
     formats: str = Form("glb,obj"),
     project: bool = Form(True),
     image_backend: Optional[str] = Form(None),
+    frames: int = Form(40),
 ) -> dict:
-    """Accept a mesh / point-cloud / image upload, create a job, and process."""
+    """Accept a mesh / point-cloud / image / image-set / video upload."""
     suffix = (Path(file.filename or "input.ply").suffix or ".ply").lower()
     mesh_exts = {".ply", ".obj", ".stl", ".off", ".glb"}
     pointcloud_exts = {".pcd", ".xyz", ".xyzn", ".pts"}
-    from ..core.image_to_mesh import IMAGE_EXTS, is_available as image3d_available
+    from ..backends.photogrammetry import any_available as photogrammetry_available
+    from ..core.frames import VIDEO_EXTS
+    from ..core.image_to_mesh import IMAGE_EXTS
+    from ..core.image_to_mesh import is_available as image3d_available
 
     if suffix in IMAGE_EXTS:
         if not image3d_available(image_backend):
@@ -122,6 +132,13 @@ async def create_and_run_job(
                 503,
                 "image input needs an image-to-3D backend "
                 f"(requested={image_backend or 'any'}), which is not available",
+            )
+    elif suffix == ".zip" or suffix in VIDEO_EXTS:
+        if not photogrammetry_available():
+            raise HTTPException(
+                503,
+                "image-set / video input needs a photogrammetry backend "
+                "(COLMAP), which is not available on this server",
             )
     elif suffix not in mesh_exts | pointcloud_exts:
         raise HTTPException(400, f"Unsupported input format: {suffix}")
@@ -146,6 +163,7 @@ async def create_and_run_job(
     config.export.formats = [f.strip() for f in formats.split(",") if f.strip()]
     if image_backend:
         config.image_backend = image_backend
+    config.video_frames = int(frames)
 
     create_job(input_path, jd, config=config, job_id=job_id)
 

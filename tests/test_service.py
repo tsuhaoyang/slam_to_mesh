@@ -384,7 +384,24 @@ def test_capabilities_endpoint(client: TestClient):
     assert "image_input" in body
     assert "image_backends" in body
     assert ".png" in body["image_exts"]
+    assert "photogrammetry" in body
+    assert "photogrammetry_backends" in body
+    assert ".mp4" in body["video_exts"]
     assert isinstance(body["backends"], list)
+
+
+def test_zip_upload_rejected_when_photogrammetry_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """A .zip / video upload returns 503 when no photogrammetry backend exists."""
+    import slam_to_mesh.backends.photogrammetry as pg
+
+    monkeypatch.setattr(pg, "any_available", lambda: False)
+    r = client.post(
+        "/jobs",
+        files={"file": ("imgs.zip", b"PK\x03\x04not-a-real-zip", "application/zip")},
+    )
+    assert r.status_code == 503
 
 
 def test_image_upload_rejected_when_triposr_unavailable(
