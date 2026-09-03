@@ -238,6 +238,22 @@ class LodResult(BaseModel):
     obj: str | None = None
 
 
+class TriLodResult(BaseModel):
+    """A triangle LOD built by QEM edge-collapse decimation.
+
+    Unlike :class:`LodResult` (regular quads via QuadriFlow), this is an
+    irregular triangle mesh at an exact target face count, produced by
+    :func:`slam_to_mesh.core.lod.build_tri_lod`.
+    """
+
+    target_faces: int
+    actual_faces: int = 0
+    mean_dist_pct_bbox: float = 0.0
+    hausdorff_pct_bbox: float = 0.0
+    glb: str | None = None
+    obj: str | None = None
+
+
 class JobManifest(BaseModel):
     """The persisted state of a pipeline job (``job.json``)."""
 
@@ -255,6 +271,8 @@ class JobManifest(BaseModel):
     results: dict[Stage, StageResult] = Field(default_factory=dict)
     #: Interactive LOD cache, keyed by "<faces>" or "<faces>+baked".
     lods: dict[str, LodResult] = Field(default_factory=dict)
+    #: Triangle (QEM) LOD cache, keyed by "<faces>".
+    tri_lods: dict[str, TriLodResult] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

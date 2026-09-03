@@ -20,7 +20,7 @@ import trimesh
 
 from ..backends.remesh import RemeshRequest, get_backend
 from .meshio import bbox_diagonal, load_mesh
-from .model import JobManifest, LodResult, Stage
+from .model import JobManifest, LodResult, Stage, TriLodResult
 
 #: Face-count clamp bounds for interactive LODs.
 MIN_LOD_FACES = 200
@@ -260,3 +260,86 @@ def _export_lod_mesh(mesh_path, obj_out, glb_out, color_tex, normal_tex) -> None
     mesh = _load_uv_mesh_with_texture(mesh_path, color_tex, normal_tex)
     mesh.export(str(obj_out))
     mesh.export(str(glb_out))
+
+
+# --------------------------------------------------------------------------- #
+# Triangle LOD (QEM edge-collapse)
+# --------------------------------------------------------------------------- #
+
+
+def build_tri_lod(
+    manifest: JobManifest,
+    target_faces: int | None = None,
+    ratio: float | None = None,
+    force: bool = False,
+) -> TriLodResult:
+    """Build (or return a cached) **triangle** LOD via QEM edge-collapse.
+
+    Unlike :func:`build_lod` (regular quads via QuadriFlow), this produces an
+    irregular triangle mesh at an exact target face count — fast, and useful as
+    the "triangle-decimated" representation in the UI. Cached in
+    ``manifest.tri_lods`` and on disk under ``lod/tri/<bucket>/``.
+    """
+    from . import _libfix
+
+    _libfix.ensure_opengl_loaded()
+
+    import pymeshlab as ml
+
+    from .stages.qc import surface_distance_metrics
+
+    resolved = resolve_target_faces(manifest, target_faces, ratio)
+    bucket = int(round(resolved / FACE_BUCKET) * FACE_BUCKET)
+    bucket = max(MIN_LOD_FACES, bucket)
+    key = str(bucket)
+
+    if not force and key in manifest.tri_lods:
+        cached = manifest.tri_lods[key]
+        glb = Path(manifest.job_dir) / cached.glb if cached.glb else None
+        if glb is not None and glb.exists():
+            return cached
+
+    job_dir = Path(manifest.job_dir)
+    sub = job_dir / "lod" / "tri" / key
+    sub.mkdir(parents=True, exist_ok=True)
+
+    src = _remesh_source(manifest)
+    ref = _reference_surface(manifest)
+
+    ms = ml.MeshSet()
+    ms.load_new_mesh(str(src))
+    before = ms.current_mesh().face_number()
+    if before > resolved:
+        ms.meshing_decimation_quadric_edge_collapse(
+            targetfacenum=int(resolved),
+            preserveboundary=True,
+            preservenormal=True,
+            preservetopology=True,
+            optimalplacement=True,
+            autoclean=True,
+        )
+    obj_out = sub / "model.obj"
+    glb_out = sub / "model.glb"
+    ms.save_current_mesh(str(obj_out))
+
+    tri = load_mesh(obj_out)
+    tri.export(str(glb_out))
+    dist = surface_distance_metrics(tri, ref)
+
+    result = TriLodResult(
+        target_faces=int(resolved),
+        actual_faces=len(tri.faces),
+        mean_dist_pct_bbox=dist["mean_dist_pct_bbox"],
+        hausdorff_pct_bbox=dist["hausdorff_pct_bbox"],
+        glb=str(glb_out.relative_to(job_dir)),
+        obj=str(obj_out.relative_to(job_dir)),
+    )
+    manifest.tri_lods[key] = result
+    manifest.save()
+    return result
+
+
+def tri_cache_key(target_faces: int) -> str:
+    """Cache key used by the tri-LOD endpoints (bucketed face count)."""
+    bucket = max(MIN_LOD_FACES, int(round(target_faces / FACE_BUCKET) * FACE_BUCKET))
+    return str(bucket)
