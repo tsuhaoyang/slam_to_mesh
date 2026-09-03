@@ -248,9 +248,13 @@ class JobManifest(BaseModel):
     job_dir: str
     config: PipelineConfig = Field(default_factory=PipelineConfig)
     input_stats: MeshStats | None = None
+    #: "mesh" or "pointcloud" — how the input was interpreted at ingest.
+    input_kind: str = "mesh"
+    #: True when a point cloud is available (original upload or generated).
+    has_pointcloud: bool = False
     results: dict[Stage, StageResult] = Field(default_factory=dict)
     #: Interactive LOD cache, keyed by "<faces>" or "<faces>+baked".
-    lods: dict[str, "LodResult"] = Field(default_factory=dict)
+    lods: dict[str, LodResult] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

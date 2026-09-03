@@ -74,6 +74,36 @@ def test_ingest_produces_artifact_and_stats(base_manifest: JobManifest):
     assert "component" in res.message
 
 
+def test_ingest_pointcloud_reconstructs_mesh(tmp_path: Path):
+    """A point-cloud input is detected, reconstructed, and points retained."""
+    import numpy as np
+    import open3d as o3d
+
+    # A dense sphere point cloud with normals.
+    n = 8000
+    rng = np.random.default_rng(0)
+    v = rng.normal(size=(n, 3))
+    v /= np.linalg.norm(v, axis=1, keepdims=True)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(v)
+    pcd.normals = o3d.utility.Vector3dVector(v)
+    src = tmp_path / "cloud.ply"
+    o3d.io.write_point_cloud(str(src), pcd)
+
+    m = create_job(src, tmp_path / "job", config=PipelineConfig())
+    ctx = StageContext(manifest=m)
+    res = STAGE_FUNCS[Stage.INGEST](ctx)
+
+    assert res.status == StageStatus.DONE
+    assert m.input_kind == "pointcloud"
+    assert m.has_pointcloud is True
+    # Original points retained + reconstructed mesh produced.
+    assert (ctx.job_dir / "00_points.ply").exists()
+    assert (ctx.job_dir / res.artifact).exists()
+    assert res.metrics["faces"] > 0
+    assert res.metrics["reconstructed_from_points"] == n
+
+
 # --------------------------------------------------------------------------- #
 # Clean
 # --------------------------------------------------------------------------- #
