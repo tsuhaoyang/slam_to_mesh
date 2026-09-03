@@ -324,6 +324,7 @@ async function uploadJob() {
   const fd = new FormData();
   fd.append("file", f);
   fd.append("target_faces", String(parseInt($("upTarget").value, 10) || 8000));
+  fd.append("frames", String(parseInt($("upFrames").value, 10) || 40));
   fd.append("backend", "quadriflow");
   fd.append("formats", "glb,obj");
 
@@ -336,8 +337,8 @@ async function uploadJob() {
     if (!r.ok) { $("upNote").textContent = `upload failed (${r.status})`; return; }
     const { job_id } = await r.json();
     $("job").value = job_id;
-    // Poll until the pipeline completes.
-    for (let i = 0; i < 120; i++) {
+    // Poll until the pipeline completes (photogrammetry can take minutes).
+    for (let i = 0; i < 300; i++) {
       await new Promise((res) => setTimeout(res, 2000));
       const s = await (await fetch(`/jobs/${job_id}`)).json();
       $("upNote").textContent = `processing… (${s.status})`;

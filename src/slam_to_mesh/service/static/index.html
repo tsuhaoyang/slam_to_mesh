@@ -29,11 +29,16 @@
       <div class="row">
         <label class="section">New job</label>
         <input id="file" type="file"
-               accept=".ply,.obj,.stl,.off,.glb,.pcd,.xyz,.png,.jpg,.jpeg,.webp" />
+               accept=".ply,.obj,.stl,.off,.glb,.pcd,.xyz,.png,.jpg,.jpeg,.webp,.zip,.mp4,.mov,.mkv,.webm" />
         <label class="mini">Target faces
           <input id="upTarget" type="number" value="8000" min="500" step="500" />
         </label>
+        <label class="mini">Video frames
+          <input id="upFrames" type="number" value="40" min="8" max="200" step="1" />
+        </label>
         <button id="upload">Upload &amp; process</button>
+        <p class="hint">mesh / point cloud / image / <b>.zip of photos</b> /
+          <b>video</b>. Photogrammetry (zip/video) takes several minutes.</p>
         <p id="upNote" class="note"></p>
       </div>
 
