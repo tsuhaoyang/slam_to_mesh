@@ -132,6 +132,7 @@ def fuse_depth_maps(
     target_points: int = 200000,
     min_views: int = 2,
     rel_tol: float = 0.01,
+    max_raw_points: int = 6000000,
 ) -> dict:
     """Back-project photometric depth maps to a merged, downsampled point cloud.
 
@@ -149,6 +150,10 @@ def fuse_depth_maps(
     all_pts: list[np.ndarray] = []
     all_cols: list[np.ndarray] = []
     used = 0
+    n_maps = sum(
+        1 for img in imgs.values()
+        if (dense / "stereo" / "depth_maps" / f"{img['name']}.photometric.bin").exists()
+    ) or 1
     for img in imgs.values():
         dm = dense / "stereo" / "depth_maps" / f"{img['name']}.photometric.bin"
         if not dm.exists():
@@ -162,6 +167,16 @@ def fuse_depth_maps(
         h, w = depth.shape
         sx, sy = w / cam["w"], h / cam["h"]
         fx, fy, cx, cy = fx*sx, fy*sy, cx*sx, cy*sy
+
+        # Cap total raw points (per-view budget) so consistency filtering stays
+        # tractable on high-res depth maps: keep a strided grid of pixels.
+        per_view = max_raw_points // n_maps
+        n_valid = int(valid.sum())
+        if per_view and n_valid > per_view:
+            stride = max(1, int(np.sqrt(n_valid / per_view)))
+            grid = np.zeros_like(valid)
+            grid[::stride, ::stride] = True
+            valid &= grid
 
         # Drop far outliers (background) beyond 1.5x the 95th percentile.
         hi = np.percentile(depth[valid], 95)
