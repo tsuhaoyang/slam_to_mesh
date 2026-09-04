@@ -99,3 +99,51 @@ def test_ingest_zip_routes_to_photogrammetry(monkeypatch, tmp_path: Path):
         ingest_stage.run(ctx)
     assert manifest.input_kind == "images"
     assert (Path(manifest.job_dir) / "00_images").is_dir()
+
+
+# --------------------------------------------------------------------------- #
+# PHOTOGRAMMETRY_DEVICE modes
+# --------------------------------------------------------------------------- #
+
+
+def test_device_default_from_env(monkeypatch):
+    monkeypatch.setenv("PHOTOGRAMMETRY_DEVICE", "cpu")
+    assert ColmapBackend().device == "cpu"
+    monkeypatch.setenv("PHOTOGRAMMETRY_DEVICE", "banana")  # invalid → auto
+    assert ColmapBackend().device == "auto"
+    monkeypatch.delenv("PHOTOGRAMMETRY_DEVICE", raising=False)
+    assert ColmapBackend().device == "auto"
+
+
+def test_device_cpu_forces_sparse(monkeypatch):
+    # cpu mode never probes for CUDA; always sparse.
+    b = ColmapBackend(device="cpu")
+    use_dense, note = b._decide_dense("/usr/bin/colmap")
+    assert use_dense is False
+    assert "cpu" in note
+
+
+def test_device_auto_falls_back_without_cuda(monkeypatch):
+    b = ColmapBackend(device="auto")
+    monkeypatch.setattr(b, "_has_cuda", lambda binary: False)
+    use_dense, note = b._decide_dense("/usr/bin/colmap")
+    assert use_dense is False
+    assert "sparse fallback" in note
+
+
+def test_device_gpu_strict_raises_without_dense(monkeypatch):
+    b = ColmapBackend(device="gpu_strict")
+    monkeypatch.setattr(b, "_has_cuda", lambda binary: False)
+    with pytest.raises(RuntimeError, match="gpu_strict"):
+        b._decide_dense("/usr/bin/colmap")
+
+
+def test_device_dense_when_cuda_and_gpu(monkeypatch):
+    import slam_to_mesh.backends.photogrammetry_colmap as mod
+
+    b = ColmapBackend(device="gpu")
+    monkeypatch.setattr(b, "_has_cuda", lambda binary: True)
+    monkeypatch.setattr(mod, "_gpu_present", lambda: True)
+    use_dense, note = b._decide_dense("/usr/bin/colmap")
+    assert use_dense is True
+    assert "dense" in note

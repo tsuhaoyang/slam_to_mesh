@@ -31,13 +31,46 @@ def find_colmap_bin() -> str | None:
     return shutil.which("colmap")
 
 
+def _gpu_present() -> bool:
+    """Best-effort NVIDIA GPU hardware check (nvidia-smi)."""
+    smi = shutil.which("nvidia-smi")
+    if smi is None:
+        return False
+    try:
+        out = subprocess.run([smi, "-L"], capture_output=True, text=True,
+                             timeout=15, check=False)
+        return out.returncode == 0 and "GPU" in out.stdout
+    except Exception:  # noqa: BLE001
+        return False
+
+
+#: Valid PHOTOGRAMMETRY_DEVICE modes.
+_DEVICE_MODES = {"auto", "cpu", "gpu", "gpu_strict"}
+
+
 class ColmapBackend:
-    """Multi-view images → dense point cloud via COLMAP."""
+    """Multi-view images → point cloud via COLMAP.
+
+    Dense MVS requires a CUDA COLMAP build **and** a GPU. The ``device`` mode
+    (from ``PHOTOGRAMMETRY_DEVICE`` or the argument) decides what happens:
+
+    * ``auto``  — dense if available, else sparse (always completes).
+    * ``cpu``   — always sparse (skip dense even if available).
+    * ``gpu``   — prefer dense; if unavailable, warn and fall back to sparse.
+    * ``gpu_strict`` — require dense; raise if unavailable (no silent downgrade).
+    """
 
     id = "colmap"
 
-    def __init__(self, use_gpu: bool = True, timeout: int = 7200) -> None:
-        self.use_gpu = use_gpu
+    def __init__(
+        self, device: str | None = None, timeout: int = 7200
+    ) -> None:
+        if device is None:
+            device = os.environ.get("PHOTOGRAMMETRY_DEVICE", "auto")
+        device = device.lower()
+        if device not in _DEVICE_MODES:
+            device = "auto"
+        self.device = device
         self.timeout = timeout
 
     def is_available(self) -> bool:
@@ -54,6 +87,32 @@ class ColmapBackend:
             return "requires cuda" not in text
         except Exception:  # noqa: BLE001
             return False
+
+    def _decide_dense(self, binary: str) -> tuple[bool, str]:
+        """Resolve the device mode to (use_dense, note).
+
+        Raises RuntimeError under ``gpu_strict`` when dense isn't possible.
+        """
+        if self.device == "cpu":
+            return False, "device=cpu → sparse"
+        cuda_build = self._has_cuda(binary)
+        gpu_hw = _gpu_present()
+        dense_possible = cuda_build and gpu_hw
+        if dense_possible:
+            return True, f"device={self.device} → dense (CUDA build + GPU)"
+        # Not possible — behavior depends on the mode.
+        reason = []
+        if not cuda_build:
+            reason.append("COLMAP build lacks CUDA")
+        if not gpu_hw:
+            reason.append("no GPU detected")
+        why = ", ".join(reason)
+        if self.device == "gpu_strict":
+            raise RuntimeError(
+                f"PHOTOGRAMMETRY_DEVICE=gpu_strict but dense MVS unavailable "
+                f"({why}); install a CUDA COLMAP (scripts/install_colmap_cuda.sh)"
+            )
+        return False, f"device={self.device} → sparse fallback ({why})"
 
     def reconstruct(self, images_dir: Path, out_points: Path) -> dict:
         binary = find_colmap_bin()
@@ -79,11 +138,14 @@ class ColmapBackend:
         ws = out_points.parent / "_colmap_ws"
         ws.mkdir(parents=True, exist_ok=True)
 
-        dense_ok = self.use_gpu and self._has_cuda(binary)
+        dense_ok, device_note = self._decide_dense(binary)
         db = ws / "database.db"
         sparse = ws / "sparse"
         sparse.mkdir(exist_ok=True)
-        gpu_flag = "1" if self.use_gpu else "0"
+        # SIFT extraction/matching can use the GPU when one is present (cheap
+        # win, works even on a non-CUDA-dense build's GUI/SIFT path); default to
+        # CPU under device=cpu or when no GPU.
+        gpu_flag = "1" if (self.device != "cpu" and _gpu_present()) else "0"
 
         def _run(args: list[str]) -> subprocess.CompletedProcess:
             return subprocess.run(
@@ -158,6 +220,8 @@ class ColmapBackend:
             "backend": self.id,
             "images": len(imgs),
             "reconstruction": used,  # "dense" (CUDA) or "sparse" (CPU fallback)
+            "device": self.device,
+            "device_note": device_note,
             "points": str(out_points),
         }
 

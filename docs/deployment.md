@@ -75,7 +75,7 @@ Run the tests in-container: `make test`.
 | `QUADRIFLOW_BIN` | path to the QuadriFlow binary | `/opt/quadriflow/quadriflow` (image) |
 | `COLMAP_BIN` | path to a COLMAP binary (e.g. CUDA build) | `colmap` on PATH |
 | `TRIPOSR_DIR` | path to the TripoSR checkout (enables image input) | sibling `TripoSR/` if present |
-| `PHOTOGRAMMETRY_DEVICE` | `auto` / `cpu` / `gpu` / `gpu_strict` (planned) | `cpu` (CPU image) |
+| `PHOTOGRAMMETRY_DEVICE` | `auto` / `cpu` / `gpu` / `gpu_strict` | `cpu` (CPU image) |
 
 Availability is always **detected at runtime**: choosing GPU doesn't assume a
 GPU — the app checks the binary's CUDA support and the hardware, and either uses
