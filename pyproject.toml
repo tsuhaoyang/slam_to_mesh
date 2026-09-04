@@ -54,6 +54,11 @@ slam2mesh = "slam_to_mesh.cli.app:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Ship the Three.js UI assets with the installed package so the service can
+# mount /ui in non-editable installs (e.g. inside Docker).
+"slam_to_mesh.service" = ["static/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
