@@ -1,0 +1,61 @@
+# slam_to_mesh service.
+#
+# Default (CPU) service runs everything baked into the image: pipeline,
+# QuadriFlow, COLMAP (CPU/sparse), photogrammetry, the FastAPI service + UI.
+#
+# The `gpu` profile is a stub for a GPU host: it requests an NVIDIA GPU and can
+# point at CUDA-built binaries (CUDA COLMAP) and a mounted TripoSR checkout.
+# Enable it with:  docker compose --profile gpu up   (see docs/deployment.md).
+
+services:
+  slam2mesh:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: slam2mesh:cpu
+    ports:
+      - "8000:8000"
+    environment:
+      JOBS_ROOT: /data/service_jobs
+      QUADRIFLOW_BIN: /opt/quadriflow/quadriflow
+      # CPU COLMAP can only do sparse; documented in docs/deployment.md.
+      PHOTOGRAMMETRY_DEVICE: cpu
+    volumes:
+      # Persist jobs across restarts.
+      - slam2mesh_jobs:/data/service_jobs
+    restart: unless-stopped
+
+  # GPU variant — opt-in. Requires nvidia-container-toolkit on the host
+  # (scripts/install_gpu_host.sh) and, for dense photogrammetry, a CUDA COLMAP
+  # (scripts/install_colmap_cuda.sh) + optionally a TripoSR checkout mounted in.
+  slam2mesh-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: slam2mesh:cpu
+    ports:
+      - "8000:8000"
+    environment:
+      JOBS_ROOT: /data/service_jobs
+      QUADRIFLOW_BIN: /opt/quadriflow/quadriflow
+      PHOTOGRAMMETRY_DEVICE: auto
+      # If you mount CUDA COLMAP / TripoSR, point the app at them:
+      # COLMAP_BIN: /opt/colmap-cuda/bin/colmap
+      # TRIPOSR_DIR: /opt/TripoSR
+    volumes:
+      - slam2mesh_jobs:/data/service_jobs
+      # Mount host-installed GPU pieces here (see docs/deployment.md):
+      # - /opt/colmap-cuda:/opt/colmap-cuda:ro
+      # - /home/howard/workspace/TripoSR:/opt/TripoSR:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  slam2mesh_jobs:

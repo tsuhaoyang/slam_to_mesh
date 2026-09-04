@@ -20,6 +20,7 @@ survives process restarts and is shared with the CLI.
 from __future__ import annotations
 
 import io
+import os
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -45,7 +46,9 @@ from ..core.pointcloud import (
 )
 
 #: Root directory for all service jobs. Configurable via env in real deploys.
-JOBS_ROOT = Path("service_jobs")
+#: Root directory for all service jobs. Override with the JOBS_ROOT env var
+#: (e.g. a mounted volume in Docker); defaults to ./service_jobs.
+JOBS_ROOT = Path(os.environ.get("JOBS_ROOT", "service_jobs"))
 
 app = FastAPI(title="slam_to_mesh", version="0.1.0")
 

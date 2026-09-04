@@ -1,0 +1,29 @@
+# Keep the build context small and reproducible.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated / local artifacts — never needed in the image.
+out/
+service_jobs/
+reports/
+*.usd
+*.usdc
+*.usda
+
+# Sibling third-party checkouts (installed via host scripts, not baked in).
+../TripoSR/
+../QuadriFlow/
+
+# Docs/tests aren't needed at runtime (tests run via a bind mount in `make test`).
+docs/
