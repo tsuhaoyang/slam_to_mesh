@@ -188,3 +188,25 @@ exporting the sparse SfM points** (fewer points, but the pipeline completes). A
 CUDA COLMAP build would yield a much denser cloud. Capture guidance:
 overlapping, sharp, textured views (10–50); too few/non-overlapping images make
 SfM fail to create a model.
+
+## Deployment: Docker + host scripts — **DONE**
+
+See `docs/deployment.md`. The CPU pipeline + service is containerized so a new
+machine runs it with `make up`:
+
+- **In the image** (`Dockerfile`, Ubuntu 22.04, multi-stage): pipeline core, CLI,
+  FastAPI service + UI, pymeshlab (+ OpenGL libs), Open3D, xatlas, usd-core,
+  source-built **QuadriFlow**, **COLMAP (CPU)**, ffmpeg. `make build/up/down/logs/
+  test/shell`, `docker-compose.yml` (CPU service + `gpu` profile stub),
+  env-aware `JOBS_ROOT` (persisted volume). Verified: image builds, service
+  serves `/healthz` + `/capabilities` (quadriflow + colmap available, image_input
+  false), a mesh job runs to 100% quad in-container, jobs persist to the volume.
+- **Host install scripts** for GPU-specific / heavy pieces left out of the image:
+  `scripts/install_gpu_host.sh` (NVIDIA Container Toolkit),
+  `scripts/install_colmap_cuda.sh` (CUDA COLMAP for dense MVS),
+  `scripts/install_triposr.sh` (isolated TripoSR venv, encodes the cu128/skimage
+  fixes). Mount/point the GPU container at them via compose env (COLMAP_BIN,
+  TRIPOSR_DIR) under the `gpu` profile.
+
+Split principle: CPU + reproducible → image; GPU-specific or huge → host script,
+pointed into the container by env. Availability is always detected at runtime.
