@@ -90,10 +90,48 @@ def _intrinsics(cam: dict):
     return p[0], p[1], p[2], p[3]  # fx, fy, cx, cy
 
 
+def _consistency_mask(pts, views, min_views, rel_tol):
+    """Keep points confirmed by >= min_views views via depth reprojection.
+
+    For each world point, project it into every view; if it lands in-frame and
+    the point's depth in that view matches the view's recorded depth map within
+    ``rel_tol`` (relative), that view "confirms" the point. Points confirmed by
+    fewer than ``min_views`` views are dropped as single-view noise.
+
+    Vectorized over all points per view (N points × V views).
+    """
+    n = len(pts)
+    confirms = np.zeros(n, dtype=np.int32)
+    for v in views:
+        R, t = v["R"], v["t"]
+        # camera coords: X_cam = R @ X_world + t
+        pc = pts @ R.T + t
+        z = pc[:, 2]
+        infront = z > 1e-6
+        u = np.full(n, -1.0)
+        vv = np.full(n, -1.0)
+        u[infront] = v["fx"] * pc[infront, 0] / z[infront] + v["cx"]
+        vv[infront] = v["fy"] * pc[infront, 1] / z[infront] + v["cy"]
+        iu = np.round(u).astype(np.int64)
+        iv = np.round(vv).astype(np.int64)
+        inframe = infront & (iu >= 0) & (iu < v["w"]) & (iv >= 0) & (iv < v["h"])
+        if not inframe.any():
+            continue
+        dmap = v["depth"]
+        sampled = np.zeros(n)
+        sampled[inframe] = dmap[iv[inframe], iu[inframe]]
+        # consistent where the view has a valid depth close to the point's depth
+        good = inframe & (sampled > 0) & (np.abs(sampled - z) <= rel_tol * z)
+        confirms[good] += 1
+    return confirms >= min_views
+
+
 def fuse_depth_maps(
     dense_dir: str | Path,
     out_points: str | Path,
     target_points: int = 200000,
+    min_views: int = 2,
+    rel_tol: float = 0.01,
 ) -> dict:
     """Back-project photometric depth maps to a merged, downsampled point cloud.
 
@@ -105,6 +143,9 @@ def fuse_depth_maps(
     imgs = read_images(dense / "sparse" / "images.bin")
     from PIL import Image
 
+    # Collect per-view data: world points + colors, and the view geometry needed
+    # to reproject points into other views for consistency checking.
+    views: list[dict] = []
     all_pts: list[np.ndarray] = []
     all_cols: list[np.ndarray] = []
     used = 0
@@ -139,6 +180,10 @@ def fuse_depth_maps(
             Image.open(dense / "images" / img["name"]).convert("RGB").resize((w, h))
         )
         all_cols.append(rgb[ys, xs] / 255.0)
+        views.append({
+            "R": R, "t": t, "fx": fx, "fy": fy, "cx": cx, "cy": cy,
+            "w": w, "h": h, "depth": depth,
+        })
         used += 1
 
     if not all_pts:
@@ -146,10 +191,25 @@ def fuse_depth_maps(
 
     pts = np.concatenate(all_pts)
     cols = np.concatenate(all_cols)
+
+    # --- Multi-view consistency filter -----------------------------------
+    # COLMAP's own geometric filter (which we bypass because it zeroes depth on
+    # sm_120/CUDA13) rejects points seen by only one view. We approximate it:
+    # keep a point only if it reprojects consistently into >= min_views other
+    # views (its depth there matches the view's recorded depth within a
+    # relative tolerance). This removes the single-view noise/flyaway points
+    # that otherwise blob up the Poisson surface.
+    if min_views and min_views > 1 and len(views) > 1:
+        keep = _consistency_mask(pts, views, min_views, rel_tol)
+        pts, cols = pts[keep], cols[keep]
+        consistent = int(keep.sum())
+    else:
+        consistent = len(pts)
+
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
     pcd.colors = o3d.utility.Vector3dVector(cols)
-    raw = len(pcd.points)
+    raw = consistent
 
     # Downsample to roughly target_points. Binary-search the voxel size, since
     # point count vs voxel is monotonic (bigger voxel → fewer points).
@@ -175,6 +235,7 @@ def fuse_depth_maps(
     o3d.io.write_point_cloud(str(out_points), pcd)
     return {
         "images_fused": used,
+        "consistent_points": int(consistent),
         "raw_points": int(raw),
         "points": len(pcd.points),
         "out": str(out_points),
