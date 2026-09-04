@@ -95,3 +95,23 @@ disable the corresponding input (e.g. no TripoSR → image upload returns 503;
   later).
 - First image/photogrammetry runs download model weights / take minutes; the UI
   sets expectations.
+
+## Photogrammetry quality & the CUDA COLMAP fusion workaround
+
+- **CPU COLMAP** does sparse only (a few hundred points) → **not usable** for a
+  real surface; results look like a blob. Use CUDA COLMAP for dense.
+- **CUDA COLMAP dense** on very new GPUs (observed: RTX 5060, sm_120, CUDA 13.3):
+  the PatchMatch **geometric consistency filter zeroes all depth**, so COLMAP's
+  own `stereo_fusion` yields 0 points (bug across COLMAP 3.9 and 3.11). The
+  photometric depth maps are still valid, so `ColmapBackend` **falls back to a
+  custom depth-map fusion** (`core/depth_fusion.py`) that back-projects the valid
+  depth via the recovered poses. `reconstruction` reports `dense_custom_fusion`.
+- **Quality still depends heavily on capture.** The custom fusion does not yet do
+  multi-view consistency filtering, so noisy/sparse captures produce noisy clouds
+  → blobby meshes. For a usable object: **orbit densely, 40–60 photos, >70%
+  overlap, textured object, even lighting, plain background**; ideally two height
+  rings.
+- Robustness fixes so the pipeline always completes on messy reconstructions:
+  Poisson uses KNN normals (+ consistent orientation) and caps the mesh to a
+  safe face budget; the QuadriFlow backend retries **without `-sharp`** if the
+  sharp run hangs/fails (common on holey photogrammetry meshes).

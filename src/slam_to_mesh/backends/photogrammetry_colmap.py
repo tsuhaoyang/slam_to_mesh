@@ -183,24 +183,37 @@ class ColmapBackend:
         points_ply: Path | None = None
 
         if dense_ok:
-            # --- Dense MVS (CUDA only) ---
+            # --- Dense MVS ---
             dense = ws / "dense"
             dense.mkdir(exist_ok=True)
-            for args in [
-                ["image_undistorter", "--image_path", str(images_dir),
-                 "--input_path", str(model_dir), "--output_path", str(dense),
-                 "--output_type", "COLMAP"],
-                ["patch_match_stereo", "--workspace_path", str(dense)],
-                ["stereo_fusion", "--workspace_path", str(dense),
-                 "--output_path", str(dense / "fused.ply")],
-            ]:
-                proc = _run(args)
-                if proc.returncode != 0:
-                    break
+            _run(["image_undistorter", "--image_path", str(images_dir),
+                  "--input_path", str(model_dir), "--output_path", str(dense),
+                  "--output_type", "COLMAP"])
+            _run(["patch_match_stereo", "--workspace_path", str(dense)])
+            _run(["stereo_fusion", "--workspace_path", str(dense),
+                  "--output_path", str(dense / "fused.ply")])
+
             fused = dense / "fused.ply"
-            if fused.exists():
+            n_fused = _ply_vertex_count(fused)
+            if n_fused > 0:
                 used = "dense"
                 points_ply = fused
+            else:
+                # COLMAP's stereo_fusion produced 0 points. On some very new
+                # GPU/CUDA builds (sm_120 / CUDA 13) the PatchMatch geometric
+                # filter zeroes all depth, so fusion has nothing to fuse — even
+                # though the photometric depth maps are valid. Fall back to our
+                # own depth-map fusion, which back-projects those valid maps.
+                try:
+                    from ..core.depth_fusion import fuse_depth_maps
+
+                    custom = ws / "fused_custom.ply"
+                    fuse_depth_maps(dense, custom, target_points=200000)
+                    if _ply_vertex_count(custom) > 0:
+                        used = "dense_custom_fusion"
+                        points_ply = custom
+                except Exception:  # noqa: BLE001, S110 - fall through to sparse
+                    pass
 
         if points_ply is None:
             # Sparse fallback: export the sparse SfM points as PLY.
@@ -235,6 +248,23 @@ class ColmapBackend:
         if (sparse_dir / "cameras.bin").exists():
             return sparse_dir
         return None
+
+
+def _ply_vertex_count(path: Path) -> int:
+    """Read a PLY header and return its declared vertex count (0 if missing)."""
+    if not Path(path).exists():
+        return 0
+    try:
+        with open(path, "rb") as f:
+            for _ in range(40):
+                line = f.readline().decode("ascii", errors="ignore").strip()
+                if line.startswith("element vertex"):
+                    return int(line.split()[-1])
+                if line == "end_header":
+                    break
+    except (OSError, ValueError):
+        return 0
+    return 0
 
 
 def _copy_or_convert_points(src_ply: Path, out_points: Path) -> None:

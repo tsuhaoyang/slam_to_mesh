@@ -99,25 +99,36 @@ class QuadriFlowRemeshBackend:
 
         # ``-f`` is the desired quad face resolution.
         resolution = max(int(req.target_faces), 100)
-        cmd = [
-            binary,
-            "-i", str(in_path),
-            "-o", str(req.output_path),
-            "-f", str(resolution),
-        ]
-        # QuadriFlow can explicitly detect and preserve sharp edges.
-        sharp = bool(req.preserve_sharp)
-        if sharp:
-            cmd.append("-sharp")
 
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-        )
-        if proc.returncode != 0 or not Path(req.output_path).exists():
+        def _run(use_sharp: bool, timeout: int):
+            cmd = [binary, "-i", str(in_path), "-o", str(req.output_path),
+                   "-f", str(resolution)]
+            if use_sharp:
+                cmd.append("-sharp")
+            return subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout, check=False
+            )
+
+        # QuadriFlow's -sharp SAT/index-map step can hang or fail on messy
+        # (photogrammetry) meshes with many non-manifold edges/holes. Try it
+        # with a bounded timeout first; on failure/timeout, retry without it so
+        # the pipeline still produces a clean quad mesh.
+        want_sharp = bool(req.preserve_sharp)
+        sharp_used = want_sharp
+        ok = False
+        if want_sharp:
+            try:
+                proc = _run(True, timeout=300)
+                ok = proc.returncode == 0 and Path(req.output_path).exists()
+            except subprocess.TimeoutExpired:
+                ok = False
+            if not ok:
+                sharp_used = False  # fall back to a robust non-sharp run
+        if not ok:
+            proc = _run(False, timeout=1800)
+            ok = proc.returncode == 0 and Path(req.output_path).exists()
+
+        if not ok:
             raise RuntimeError(
                 f"quadriflow failed (rc={proc.returncode}): "
                 f"{proc.stderr.strip() or proc.stdout.strip()}"
@@ -146,7 +157,7 @@ class QuadriFlowRemeshBackend:
                 "quads": int(quads),
                 "quad_ratio": round(quad_ratio, 6),
                 "resolution": int(resolution),
-                "sharp": sharp,
+                "sharp": sharp_used,
                 "backend_binary": binary,
                 "feature_lines_provided": bool(feature_lines_provided),
                 "feature_lines_used": False,

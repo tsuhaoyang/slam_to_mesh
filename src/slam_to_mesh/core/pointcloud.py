@@ -78,6 +78,7 @@ def reconstruct_poisson(
     out_mesh: str | Path,
     depth: int = 9,
     density_quantile: float = 0.02,
+    max_faces: int = 200000,
 ) -> dict:
     """Reconstruct a triangle mesh from a point cloud via Poisson.
 
@@ -89,13 +90,13 @@ def reconstruct_poisson(
     pcd = load_point_cloud(points_path)
     n_points = len(pcd.points)
 
-    if not pcd.has_normals():
-        pcd.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                radius=_auto_radius(pcd), max_nn=30
-            )
-        )
-        pcd.orient_normals_consistent_tangent_plane(30)
+    # Robust normals: KNN (always finds neighbors, unlike a fixed radius which
+    # can leave isolated points with degenerate normals → Poisson can crash on
+    # dense/noisy multi-view clouds). Always (re)estimate + orient consistently.
+    pcd.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30)
+    )
+    pcd.orient_normals_consistent_tangent_plane(30)
 
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
         pcd, depth=int(depth)
@@ -104,6 +105,14 @@ def reconstruct_poisson(
     if density_quantile > 0 and len(densities):
         thresh = np.quantile(densities, density_quantile)
         mesh.remove_vertices_by_mask(densities < thresh)
+    mesh.remove_unreferenced_vertices()
+
+    # Cap mesh size so downstream stages (which analyze/proximity-query the
+    # whole mesh) stay fast and don't choke on a huge Poisson output.
+    capped = False
+    if len(mesh.triangles) > max_faces:
+        mesh = mesh.simplify_quadric_decimation(int(max_faces))
+        capped = True
 
     mesh.compute_vertex_normals()
     out_mesh = Path(out_mesh)
@@ -115,16 +124,8 @@ def reconstruct_poisson(
         "mesh_vertices": len(mesh.vertices),
         "mesh_faces": len(mesh.triangles),
         "poisson_depth": int(depth),
+        "capped": capped,
     }
-
-
-def _auto_radius(pcd: o3d.geometry.PointCloud) -> float:
-    """A reasonable normal-estimation radius from the cloud's extent."""
-    aabb = pcd.get_axis_aligned_bounding_box()
-    diag = float(np.linalg.norm(aabb.get_extent()))
-    n = max(len(pcd.points), 1)
-    # Scale with density: ~ diagonal / cube-root(points).
-    return max(diag / (n ** (1.0 / 3.0)) * 3.0, 1e-6)
 
 
 def voxel_downsample(
